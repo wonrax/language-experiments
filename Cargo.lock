@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "rust-vec-box"
+name = "rust-experiments"
 version = "0.1.0"

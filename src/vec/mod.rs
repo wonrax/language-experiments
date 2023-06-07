@@ -6,15 +6,15 @@ pub struct Vec<T> {
 
 struct Nothing;
 
-pub fn new<T>() -> Vec<T> {
-    return Vec {
-        items: Box::new([]),
-        len: 0,
-        cap: 0,
-    };
-}
-
 impl<T> Vec<T> {
+    pub fn new() -> Vec<T> {
+        Vec {
+            items: Box::new([]),
+            len: 0,
+            cap: 0,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -24,6 +24,14 @@ impl<T> Vec<T> {
             return None;
         }
         Some(&(*self.items)[i])
+    }
+
+    pub fn push(&mut self, item: T) {
+        if self.len + 1 > self.cap {
+            // realloc (aka grow)
+        }
+        (*self.items)[self.len] = item;
+        self.len = self.len + 1;
     }
 }
 
