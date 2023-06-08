@@ -9,7 +9,7 @@ I am and will be doing the following:
 - [ ] Experiment rendering in WebGPU (via wgpu, also my first time trying WebGPU) (ref: [^2])
 
 ##### Algorithms
-- [ ] Image blob detection (ref: [^3])
+- [ ] Re-implement image blob detection (ref: [^3])
 
 More to come!
 
