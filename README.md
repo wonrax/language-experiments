@@ -11,6 +11,7 @@ I am and will be doing the following:
 ##### Algorithms
 - [ ] Image blob detection (ref: [^3])
 
+More to come!
 
 [^1]: [Implementing Vec - The Rustonomicon](https://doc.rust-lang.org/nomicon/vec/vec.html)
 [^2]: [Learn wgpu - sotrh.github.io](https://sotrh.github.io/learn-wgpu)
