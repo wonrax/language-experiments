@@ -4,8 +4,6 @@ pub struct Vec<T> {
     cap: usize,
 }
 
-struct Nothing;
-
 impl<T> Vec<T> {
     pub fn new() -> Vec<T> {
         Vec {
