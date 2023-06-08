@@ -6,11 +6,18 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+log = "0.4"
+# wgpu:
+cfg-if = "1"
 winit = "0.28"
 env_logger = "0.10"
-log = "0.4"
 wgpu = "0.16"
+pollster = "0.3"
 
 [[bin]]
-name = "wgpu"
-path = "./src/graphic/wgpu.rs"
+name = "wgpu-window"
+path = "./src/graphic/wgpu/1.window.rs"
+
+[[bin]]
+name = "wgpu-surface"
+path = "./src/graphic/wgpu/2.surface.rs"
