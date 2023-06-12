@@ -21,3 +21,7 @@ path = "./src/graphic/wgpu/1.window.rs"
 [[bin]]
 name = "wgpu-surface"
 path = "./src/graphic/wgpu/2.surface.rs"
+
+[[bin]]
+name = "wgpu-pipeline"
+path = "./src/graphic/wgpu/3.pipeline.rs"
