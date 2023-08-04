@@ -1,3 +1,6 @@
+[workspace]
+members = ["architect/plugin-system"]
+
 [package]
 name = "rust-experiments"
 version = "0.1.0"
