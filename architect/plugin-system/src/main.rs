@@ -1,37 +1,34 @@
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashMap;
 
-struct PluginManager<'a> {
-    plugins: Vec<Box<dyn IPlugin>>,
-    plugin_state: HashMap<Box<&'a dyn IPlugin>, bool>,
+enum PluginState {
+    Enabled,
+    Started,
+    Disabled, // or stopped
+    Destroyed
 }
 
-impl<'a> PartialEq for Box<&'a dyn IPlugin> {
-    fn eq(&self, other: &Self) -> bool {
-        return true;
-    }
-}
-
-impl<'a> Eq for Box<&'a dyn IPlugin> {
-
-}
-
-impl<'a> Hash for Box<&'a dyn IPlugin> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {}
+struct PluginManager {
+    plugin_states: HashMap<String, PluginState>,
+    plugins: Vec<Box<dyn IPlugin>>
 }
 
 trait IPluginManager {
-    fn register_plugin(&mut self, p: &impl IPlugin);
+    fn register_plugin<'a>(&mut self, p: impl IPlugin + 'static) -> Result<&Box<dyn IPlugin>, String>;
 }
 
-fn _get_name<T>(_: &T) -> &'static str {
-    std::any::type_name::<T>()
-}
+impl IPluginManager for PluginManager {
+    fn register_plugin(&mut self, p: impl IPlugin + 'static) -> Result<&Box<dyn IPlugin>, String> {
+        let type_name = p.get_name();
+        if self.plugin_states.contains_key(type_name) {
+            return Err("Plugin already exists".into());
+        }
 
-impl IPluginManager for PluginManager<'_> {
-    fn register_plugin<'a>(&mut self, p: &'a impl IPlugin) {
-        let type_name = _get_name(&p);
-        println!("{type_name}");
-        self.plugin_state.insert(Box::new(p as &'a dyn IPlugin), true).expect("must");
+        self.plugin_states.insert(type_name.into(), PluginState::Enabled);
+
+        let _p = Box::new(p);
+        self.plugins.push(_p);
+
+        Ok(self.plugins.last().unwrap())
     }
 }
 
@@ -44,12 +41,19 @@ trait IPlugin {
     fn on_start(&self) {}
     fn on_disabled(&self) {}
     fn on_destroy(&self) {}
+    fn get_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 fn main() {
     let mut pm = PluginManager {
-        plugins: vec![],
-        plugin_state: HashMap::new(),
+        plugin_states: HashMap::new(),
+        plugins: Vec::new()
     };
-    pm.register_plugin(&APlugin {})
+
+    match pm.register_plugin(APlugin {}) {
+        Ok(p) => println!("Registered {}", p.get_name()),
+        Err(err) => println!("Error: {}", err),
+    }
 }
