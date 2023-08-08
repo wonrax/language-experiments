@@ -1,6 +1,6 @@
 {
-    "rust-analyzer.runnables.extraArgs": [
-        // "--target=x86_64-pc-windows-gnu"
-    ],
+    "rust-analyzer.runnables.extraEnv": {
+        "RUST_LOG": "trace"
+    },
     "rust-analyzer.showUnlinkedFileNotification": false,
 }

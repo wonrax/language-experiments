@@ -1,8 +1,9 @@
-use std::{
-    collections::HashMap, error::{self, Error},
-};
+use log::{error, info};
+use pretty_env_logger;
+use std::{collections::HashMap, fmt::Display};
+use thiserror;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum PluginState {
     Enabled,
     Started,
@@ -10,9 +11,24 @@ enum PluginState {
     Destroyed,
 }
 
+impl Display for PluginState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let name = std::any::type_name::<Self>();
+        write!(f, "{}", name)
+    }
+}
+
 struct PluginManager {
     plugin_states: HashMap<String, PluginState>,
     plugins: HashMap<String, Box<dyn IPlugin>>,
+}
+
+#[derive(thiserror::Error, Debug)]
+enum PluginSystemError {
+    #[error("Plugin `{0}` does not exist")]
+    PluginNotExists(String),
+    #[error("Invalid state transition, current state: `{0}`, action: `{1}`")]
+    InvalidStateTransition(PluginState, String),
 }
 
 impl PluginManager {
@@ -40,7 +56,7 @@ impl PluginManager {
         }
     }
 
-    fn start_plugin(&mut self, plugin_name: String) -> Result<(), Box<dyn Error>> {
+    fn start_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
         match self.plugin_states.get(&plugin_name) {
             Some(state) => match state {
                 PluginState::Enabled => match self.plugins.get_mut(&plugin_name) {
@@ -49,33 +65,73 @@ impl PluginManager {
                         self.plugin_states.insert(plugin_name, PluginState::Started);
                         Ok(())
                     }
-                    _ => Error::new,
+                    _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
                 },
-                _ => ()
+                rest => Err(PluginSystemError::InvalidStateTransition(
+                    rest.clone(),
+                    "start_plugin".into(),
+                )),
             },
-            _ => (),
+            _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
         }
     }
 
-    fn disable_plugin(&mut self, plugin_name: String) {
-        match self.plugins.get_mut(&plugin_name) {
-            Some(p) => {
-                p.on_disabled();
-                self.plugin_states
-                    .insert(plugin_name, PluginState::Disabled);
-            }
-            _ => (),
+    fn disable_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
+        match self.plugin_states.get(&plugin_name) {
+            Some(state) => match state {
+                PluginState::Enabled | PluginState::Started => {
+                    match self.plugins.get_mut(&plugin_name) {
+                        Some(p) => {
+                            p.on_disabled();
+                            self.plugin_states.insert(plugin_name, PluginState::Started);
+                            Ok(())
+                        }
+                        _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                    }
+                }
+                rest => Err(PluginSystemError::InvalidStateTransition(
+                    rest.clone(),
+                    "start_plugin".into(),
+                )),
+            },
+            _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
         }
     }
 
-    fn destroy_plugin(&mut self, plugin_name: String) {
-        match self.plugins.get_mut(&plugin_name) {
-            Some(p) => {
-                p.on_destroy();
-                self.plugin_states
-                    .insert(plugin_name, PluginState::Destroyed);
-            }
-            _ => (),
+    fn destroy_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
+        match self.plugin_states.get(&plugin_name) {
+            Some(state) => match state {
+                PluginState::Enabled | PluginState::Disabled => {
+                    match self.plugins.get_mut(&plugin_name) {
+                        Some(p) => {
+                            p.on_destroy();
+                            self.plugin_states
+                                .insert(plugin_name, PluginState::Destroyed);
+                            Ok(())
+                        }
+                        _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                    }
+                }
+                PluginState::Started => match self.plugins.get_mut(&plugin_name) {
+                    Some(p) => {
+                        p.on_disabled();
+                        self.plugin_states
+                            .insert(plugin_name.clone(), PluginState::Disabled);
+
+                        p.on_destroy();
+                        self.plugin_states
+                            .insert(plugin_name, PluginState::Destroyed);
+
+                        Ok(())
+                    }
+                    _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                },
+                rest => Err(PluginSystemError::InvalidStateTransition(
+                    rest.clone(),
+                    "start_plugin".into(),
+                )),
+            },
+            _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
         }
     }
 }
@@ -94,18 +150,30 @@ trait IPlugin {
 }
 
 fn main() {
+    pretty_env_logger::init();
+
     let mut pm = PluginManager {
         plugin_states: HashMap::new(),
         plugins: HashMap::new(),
     };
 
     match pm.register_plugin(APlugin {}) {
-        Ok(p) => println!("Registered {}", p.get_name()),
-        Err(err) => println!("Error: {}", err),
+        Ok(p) => info!("Registered {}", p.get_name()),
+        Err(err) => error!("Error: {}", err),
     }
     match pm.register_plugin(APlugin {}) {
-        Ok(p) => println!("Registered {}", p.get_name()),
-        Err(err) => println!("Error: {}", err),
+        Ok(p) => info!("Registered {}", p.get_name()),
+        Err(err) => error!("Error: {}", err),
+    }
+
+    match pm.start_plugin("plugin_system::APlugin".into()) {
+        Ok(()) => info!("Started plugin {}", "plugin_system::APlugin"),
+        Err(err) => error!("Couldn't start plugin: {}", err),
+    }
+
+    match pm.start_plugin("plugin_system::APlugin".into()) {
+        Ok(()) => info!("Started plugin {}", "plugin_system::APlugin"),
+        Err(err) => error!("Couldn't start plugin: {}", err),
     }
 
     // println!("{:?}", pm.plugin_states.get(&Box::new(APlugin{})));
