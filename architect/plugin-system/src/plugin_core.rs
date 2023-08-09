@@ -36,12 +36,16 @@ pub struct PluginManager {
 pub enum PluginSystemError {
     #[error("Plugin `{0}` does not exist")]
     PluginNotExists(String),
+
     #[error("Plugin `{0}` already exists")]
     PluginAlreadyExists(String),
+
     #[error("Invalid state transition, current state: `{0}`, action: `{1}`")]
     InvalidStateTransition(PluginState, String),
+
     #[error("Couldn't cast to plugin this type")]
     InvalidPluginType,
+
     #[error("{0}")]
     Unknown(String),
 }

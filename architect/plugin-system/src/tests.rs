@@ -73,8 +73,14 @@ mod test {
 
         let plugin_name: String = plugin.get_name().into();
 
-        assert_eq!(plugin.env, "test");
-        assert_eq!(plugin.i, 1);
+        {
+            let plugin = pm
+                .get_plugin_ref::<TestLifecyclePlugin>(&plugin_name)
+                .unwrap();
+
+            assert_eq!(plugin.env, "test");
+            assert_eq!(plugin.i, 1);
+        }
 
         {
             pm.start_plugin(plugin_name.clone()).unwrap();
