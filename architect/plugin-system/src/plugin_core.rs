@@ -1,14 +1,22 @@
-use std::{collections::HashMap, fmt::{Display, Debug}};
+use std::{
+    any::Any,
+    collections::HashMap,
+    fmt::{Debug, Display},
+};
 use thiserror;
 
-pub trait IPlugin: Debug {
-    fn on_enabled(&mut self) {}
+pub trait IPlugin: Debug + AToAny {
+    fn on_enabled(&mut self, _: &PluginConfig) {}
     fn on_start(&mut self) {}
     fn on_disabled(&mut self) {}
     fn on_destroy(&mut self) {}
     fn get_name(&self) -> &'static str {
         std::any::type_name::<Self>()
     }
+}
+
+pub struct PluginConfig {
+    pub environment: String,
 }
 
 #[derive(Debug, Clone)]
@@ -32,22 +40,36 @@ pub enum PluginSystemError {
     PluginAlreadyExists(String),
     #[error("Invalid state transition, current state: `{0}`, action: `{1}`")]
     InvalidStateTransition(PluginState, String),
+    #[error("Couldn't cast to plugin this type")]
+    InvalidPluginType,
     #[error("{0}")]
     Unknown(String),
 }
 
+pub trait AToAny {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl<T: 'static> AToAny for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+
 impl PluginManager {
-    pub fn register_plugin(
+    pub fn register_plugin<T: IPlugin + 'static>(
         &mut self,
-        mut p: impl IPlugin + 'static,
-    ) -> Result<&Box<dyn IPlugin>, PluginSystemError> {
+        mut p: T,
+        plugin_config: &PluginConfig,
+    ) -> Result<&T, PluginSystemError> {
         let type_name = p.get_name().to_string();
 
         if self.plugin_states.contains_key(&type_name) {
             return Err(PluginSystemError::PluginAlreadyExists(type_name));
         }
 
-        p.on_enabled();
+        p.on_enabled(plugin_config);
 
         let _p = Box::new(p);
         self.plugins.insert(type_name.clone(), _p);
@@ -56,7 +78,8 @@ impl PluginManager {
             .insert(type_name.clone(), PluginState::Enabled);
 
         match self.plugins.get(&type_name) {
-            Some(plugin_ref) => Ok(plugin_ref),
+            // I don't even know how this works, someone pls explain
+            Some(p) => Ok(p.as_ref().as_any().downcast_ref::<T>().unwrap()),
             None => Err(PluginSystemError::Unknown(
                 "Plugin registered but couldn't get the reference to it".into(),
             )),
@@ -83,7 +106,7 @@ impl PluginManager {
         }
     }
 
-    fn disable_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
+    pub fn disable_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
         match self.plugin_states.get(&plugin_name) {
             Some(state) => match state {
                 PluginState::Enabled | PluginState::Started => {
@@ -105,7 +128,7 @@ impl PluginManager {
         }
     }
 
-    fn destroy_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
+    pub fn destroy_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
         match self.plugin_states.get(&plugin_name) {
             Some(state) => match state {
                 PluginState::Enabled | PluginState::Disabled => {
@@ -139,6 +162,17 @@ impl PluginManager {
                 )),
             },
             _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+        }
+    }
+
+    pub fn get_plugin_ref<T: 'static>(&self, name: &String) -> Result<&T, PluginSystemError> {
+        match self.plugins.get(name) {
+            // I don't even know how this works, someone pls explain
+            Some(p) => match p.as_ref().as_any().downcast_ref::<T>() {
+                Some(p) => Ok(p),
+                None => Err(PluginSystemError::InvalidPluginType)
+            },
+            None => Err(PluginSystemError::PluginNotExists(name.clone())),
         }
     }
 }

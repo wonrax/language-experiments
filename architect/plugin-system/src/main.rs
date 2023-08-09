@@ -18,11 +18,12 @@ fn main() {
         plugins: HashMap::new(),
     };
 
-    match pm.register_plugin(APlugin {}) {
-        Ok(p) => info!("Registered {}", p.get_name()),
-        Err(err) => error!("Error: {}", err),
-    }
-    match pm.register_plugin(APlugin {}) {
+    match pm.register_plugin(
+        APlugin {},
+        &PluginConfig {
+            environment: "prod".into(),
+        },
+    ) {
         Ok(p) => info!("Registered {}", p.get_name()),
         Err(err) => error!("Error: {}", err),
     }
@@ -31,11 +32,4 @@ fn main() {
         Ok(()) => info!("Started plugin {}", "plugin_system::APlugin"),
         Err(err) => error!("Couldn't start plugin: {}", err),
     }
-
-    match pm.start_plugin("plugin_system::APlugin".into()) {
-        Ok(()) => info!("Started plugin {}", "plugin_system::APlugin"),
-        Err(err) => error!("Couldn't start plugin: {}", err),
-    }
-
-    // println!("{:?}", pm.plugin_states.get(&Box::new(APlugin{})));
 }
