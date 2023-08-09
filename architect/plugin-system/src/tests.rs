@@ -71,11 +71,11 @@ mod test {
             )
             .expect("should not fail");
 
-        let plugin_name: String = plugin.get_name().into();
+        let plugin_name = plugin.get_name();
 
         {
             let plugin = pm
-                .get_plugin_ref::<TestLifecyclePlugin>(&plugin_name)
+                .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
             assert_eq!(plugin.env, "test");
@@ -83,30 +83,30 @@ mod test {
         }
 
         {
-            pm.start_plugin(plugin_name.clone()).unwrap();
+            pm.start_plugin(plugin_name).unwrap();
 
             let plugin = pm
-                .get_plugin_ref::<TestLifecyclePlugin>(&plugin_name)
+                .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
             assert_eq!(plugin.i, 2);
         }
 
         {
-            pm.disable_plugin(plugin_name.clone()).unwrap();
+            pm.disable_plugin(plugin_name).unwrap();
 
             let plugin = pm
-                .get_plugin_ref::<TestLifecyclePlugin>(&plugin_name)
+                .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
             assert_eq!(plugin.i, 0);
         }
 
         {
-            pm.destroy_plugin(plugin_name.clone()).unwrap();
+            pm.destroy_plugin(plugin_name).unwrap();
 
             let plugin = pm
-                .get_plugin_ref::<TestLifecyclePlugin>(&plugin_name)
+                .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
             assert_eq!(plugin.i, -1);

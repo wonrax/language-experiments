@@ -10,7 +10,7 @@ pub trait IPlugin: Debug + AToAny {
     fn on_start(&mut self) {}
     fn on_disabled(&mut self) {}
     fn on_destroy(&mut self) {}
-    fn get_name(&self) -> &'static str {
+    fn get_name<'a>(&self) -> &'a str {
         std::any::type_name::<Self>()
     }
 }
@@ -60,7 +60,6 @@ impl<T: 'static> AToAny for T {
     }
 }
 
-
 impl PluginManager {
     pub fn register_plugin<T: IPlugin + 'static>(
         &mut self,
@@ -90,37 +89,39 @@ impl PluginManager {
         }
     }
 
-    pub fn start_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
-        match self.plugin_states.get(&plugin_name) {
+    pub fn start_plugin(&mut self, plugin_name: &str) -> Result<(), PluginSystemError> {
+        match self.plugin_states.get(plugin_name) {
             Some(state) => match state {
-                PluginState::Enabled => match self.plugins.get_mut(&plugin_name) {
+                PluginState::Enabled => match self.plugins.get_mut(plugin_name) {
                     Some(p) => {
                         p.on_start();
-                        self.plugin_states.insert(plugin_name, PluginState::Started);
+                        self.plugin_states
+                            .insert(plugin_name.to_string(), PluginState::Started);
                         Ok(())
                     }
-                    _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                    _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
                 },
                 rest => Err(PluginSystemError::InvalidStateTransition(
                     rest.clone(),
                     "start_plugin".into(),
                 )),
             },
-            _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+            _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
         }
     }
 
-    pub fn disable_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
-        match self.plugin_states.get(&plugin_name) {
+    pub fn disable_plugin(&mut self, plugin_name: &str) -> Result<(), PluginSystemError> {
+        match self.plugin_states.get(plugin_name) {
             Some(state) => match state {
                 PluginState::Enabled | PluginState::Started => {
-                    match self.plugins.get_mut(&plugin_name) {
+                    match self.plugins.get_mut(plugin_name) {
                         Some(p) => {
                             p.on_disabled();
-                            self.plugin_states.insert(plugin_name, PluginState::Started);
+                            self.plugin_states
+                                .insert(plugin_name.to_string(), PluginState::Started);
                             Ok(())
                         }
-                        _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                        _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
                     }
                 }
                 rest => Err(PluginSystemError::InvalidStateTransition(
@@ -128,55 +129,55 @@ impl PluginManager {
                     "start_plugin".into(),
                 )),
             },
-            _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+            _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
         }
     }
 
-    pub fn destroy_plugin(&mut self, plugin_name: String) -> Result<(), PluginSystemError> {
-        match self.plugin_states.get(&plugin_name) {
+    pub fn destroy_plugin(&mut self, plugin_name: &str) -> Result<(), PluginSystemError> {
+        match self.plugin_states.get(plugin_name) {
             Some(state) => match state {
                 PluginState::Enabled | PluginState::Disabled => {
-                    match self.plugins.get_mut(&plugin_name) {
+                    match self.plugins.get_mut(plugin_name) {
                         Some(p) => {
                             p.on_destroy();
                             self.plugin_states
-                                .insert(plugin_name, PluginState::Destroyed);
+                                .insert(plugin_name.to_string(), PluginState::Destroyed);
                             Ok(())
                         }
-                        _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                        _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
                     }
                 }
-                PluginState::Started => match self.plugins.get_mut(&plugin_name) {
+                PluginState::Started => match self.plugins.get_mut(plugin_name) {
                     Some(p) => {
                         p.on_disabled();
                         self.plugin_states
-                            .insert(plugin_name.clone(), PluginState::Disabled);
+                            .insert(plugin_name.to_string(), PluginState::Disabled);
 
                         p.on_destroy();
                         self.plugin_states
-                            .insert(plugin_name, PluginState::Destroyed);
+                            .insert(plugin_name.to_string(), PluginState::Destroyed);
 
                         Ok(())
                     }
-                    _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+                    _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
                 },
                 rest => Err(PluginSystemError::InvalidStateTransition(
                     rest.clone(),
                     "start_plugin".into(),
                 )),
             },
-            _ => Err(PluginSystemError::PluginNotExists(plugin_name)),
+            _ => Err(PluginSystemError::PluginNotExists(plugin_name.to_string())),
         }
     }
 
-    pub fn get_plugin_ref<T: 'static>(&self, name: &String) -> Result<&T, PluginSystemError> {
+    pub fn get_plugin_ref<T: 'static>(&self, name: &str) -> Result<&T, PluginSystemError> {
         match self.plugins.get(name) {
             // I don't even know how this works, someone pls explain
             Some(p) => match p.as_ref().as_any().downcast_ref::<T>() {
                 Some(p) => Ok(p),
-                None => Err(PluginSystemError::InvalidPluginType)
+                None => Err(PluginSystemError::InvalidPluginType),
             },
-            None => Err(PluginSystemError::PluginNotExists(name.clone())),
+            None => Err(PluginSystemError::PluginNotExists(name.to_string())),
         }
     }
 }
