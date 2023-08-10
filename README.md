@@ -1,15 +1,21 @@
-How I learn rust by trying implementing various things, in various industries to see where it shines and to decide if I want to work with rust or not.
+How I learn rust by trying implementing various things, in various industries to
+see where it shines and to decide if I want to work with rust or not.
 
 I am and will be doing the following:
 
+##### Software architect
+-   `[In Progress]` **Plugin system** – a system I originally designed in Go at work.
+    It supports application lifecycle (on start, on destroy, etc., inspired by
+    Unity) for each plugin and a callback driven event dispatcher.
+
 ##### Data structures
-- [ ] Re-implement vec (ref: [^1])
+- `[Planned]` Re-implement vec (ref: [^1])
 
 ##### Graphics
-- [ ] Experiment rendering in WebGPU (via wgpu, also my first time trying WebGPU) (ref: [^2])
+- `[Planned]` Experiment rendering in WebGPU (via wgpu, also my first time trying WebGPU) (ref: [^2])
 
 ##### Algorithms
-- [ ] Re-implement image blob detection (ref: [^3])
+- `[Planned]` Re-implement image blob detection (ref: [^3])
 
 More to come!
 
