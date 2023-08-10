@@ -12,7 +12,7 @@ I am and will be doing the following:
 - `[Planned]` Re-implement vec (ref: [^1])
 
 ##### Graphics
-- `[Planned]` Experiment rendering in WebGPU (via wgpu, also my first time trying WebGPU) (ref: [^2])
+- `[In Progress]` Experiment rendering in WebGPU (via wgpu, also my first time trying WebGPU) (ref: [^2])
 
 ##### Algorithms
 - `[Planned]` Re-implement image blob detection (ref: [^3])
