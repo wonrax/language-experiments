@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod test {
-    use std::collections::HashMap;
+    use std::{collections::HashMap, marker::PhantomData};
 
     use crate::plugin_core::*;
 
@@ -52,7 +52,7 @@ mod test {
 
     #[test]
     fn test_plugin_lifecycle() {
-        let mut pm = PluginManager {
+        let mut plugin_manager = PluginManager {
             plugin_states: HashMap::new(),
             plugins: HashMap::new(),
         };
@@ -61,7 +61,7 @@ mod test {
             environment: "test".into(),
         };
 
-        let plugin = pm
+        let plugin = plugin_manager
             .register_plugin(
                 TestLifecyclePlugin {
                     env: "".into(),
@@ -74,7 +74,7 @@ mod test {
         let plugin_name = plugin.get_name();
 
         {
-            let plugin = pm
+            let plugin = plugin_manager
                 .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
@@ -83,9 +83,9 @@ mod test {
         }
 
         {
-            pm.start_plugin(plugin_name).unwrap();
+            plugin_manager.start_plugin(plugin_name).unwrap();
 
-            let plugin = pm
+            let plugin = plugin_manager
                 .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
@@ -93,9 +93,9 @@ mod test {
         }
 
         {
-            pm.disable_plugin(plugin_name).unwrap();
+            plugin_manager.disable_plugin(plugin_name).unwrap();
 
-            let plugin = pm
+            let plugin = plugin_manager
                 .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
@@ -103,13 +103,67 @@ mod test {
         }
 
         {
-            pm.destroy_plugin(plugin_name).unwrap();
+            plugin_manager.destroy_plugin(plugin_name).unwrap();
 
-            let plugin = pm
+            let plugin = plugin_manager
                 .get_plugin_ref::<TestLifecyclePlugin>(plugin_name)
                 .unwrap();
 
             assert_eq!(plugin.i, -1);
         }
+    }
+
+    // Another way to test using helper to shorten the method call
+    #[test]
+    fn test_plugin_lifecycle_alternative() {
+        struct TestHelper<T> {
+            pm: PluginManager,
+            plugin_name: String,
+            phantom: PhantomData<T>,
+        }
+
+        impl<T: 'static> TestHelper<T> {
+            fn get_plugin_ref(&self) -> &T {
+                return self.pm.get_plugin_ref(&self.plugin_name).unwrap();
+            }
+        }
+
+        let plugin = TestLifecyclePlugin {
+            env: "".into(),
+            i: 0,
+        };
+
+        let mut test_helper = TestHelper::<TestLifecyclePlugin> {
+            pm: PluginManager {
+                plugin_states: HashMap::new(),
+                plugins: HashMap::new(),
+            },
+            plugin_name: plugin.get_name().into(),
+            phantom: PhantomData,
+        };
+
+        let plugin = test_helper
+            .pm
+            .register_plugin(
+                plugin,
+                &PluginConfig {
+                    environment: "test".into(),
+                },
+            )
+            .expect("should not fail");
+
+        let plugin_name = plugin.get_name().to_string();
+
+        assert_eq!(plugin.env, "test");
+        assert_eq!(plugin.i, 1);
+
+        test_helper.pm.start_plugin(&plugin_name).unwrap();
+        assert_eq!(test_helper.get_plugin_ref().i, 2);
+
+        test_helper.pm.disable_plugin(&plugin_name).unwrap();
+        assert_eq!(test_helper.get_plugin_ref().i, 0);
+
+        test_helper.pm.destroy_plugin(&plugin_name).unwrap();
+        assert_eq!(test_helper.get_plugin_ref().i, -1);
     }
 }
