@@ -1,1 +1,5 @@
 /target
+
+# https://github.com/jepsen-io/maelstrom
+/maelstrom
+

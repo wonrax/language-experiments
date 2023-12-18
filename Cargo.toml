@@ -1,5 +1,5 @@
 [workspace]
-members = ["architect/plugin-system"]
+members = ["architect/plugin-system", "challenge/dist-sys"]
 
 [package]
 name = "rust-experiments"
