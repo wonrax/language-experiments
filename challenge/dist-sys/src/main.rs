@@ -1,7 +1,8 @@
 use std::{
+    collections::HashMap,
     io::{self, Write},
     rc::Rc,
-    sync::mpsc,
+    sync::{mpsc, Arc, Mutex},
     thread,
 };
 
@@ -16,7 +17,7 @@ struct Message {
 
 #[derive(Clone)]
 struct Context {
-    send: mpsc::Sender<Message>,
+    send: mpsc::Sender<Request>,
     node_id: Rc<String>,
     node_ids: Rc<Vec<String>>,
 }
@@ -47,6 +48,13 @@ impl From<anyhow::Error> for Message {
     }
 }
 
+struct Request {
+    msg: Message,
+
+    // Use this to send a response back to the client
+    send: mpsc::Sender<Message>,
+}
+
 fn main() {
     let mut buffer = String::new();
 
@@ -56,19 +64,27 @@ fn main() {
         panic!("first message must be init");
     }
 
-    // use this to send extra messages to the coordinator apart from the
-    // main thread which handles the RPCs
-    let (send_response, recv_response) = mpsc::channel();
+    // use this as a RPC client, which is different than the main loop below
+    // which acts like a listen server
+    let (send_request, recv_request) = mpsc::channel::<Request>();
+
+    let mut request_senders: Arc<Mutex<HashMap<i64, mpsc::Sender<Message>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let request_senders_clone = request_senders.clone();
 
     thread::spawn(move || {
-        for msg in recv_response {
-            let response_str = serde_json::to_string(&msg).unwrap() + "\n";
-            io::stdout().write_all(response_str.as_bytes()).unwrap();
+        for request in recv_request {
+            let request_str = serde_json::to_string(&request.msg).unwrap() + "\n";
+            io::stdout().write_all(request_str.as_bytes()).unwrap();
+
+            let mut request_senders = request_senders_clone.lock().unwrap();
+            request_senders.insert(request.msg.body.msg_id.unwrap(), request.send);
         }
     });
 
     let context = Context {
-        send: send_response,
+        send: send_request,
         node_id: Rc::new(
             message
                 .body
@@ -95,21 +111,28 @@ fn main() {
 
     buffer.clear();
 
+    let request_senders_clone = request_senders.clone();
+    let response_buffer = String::new();
+
+    thread::spawn(|| {});
+
     while let Ok(length) = io::stdin().read_line(&mut buffer) {
         let message: Message = serde_json::from_str(&buffer).unwrap();
 
         let response = match message.body.typ.as_str() {
-            "echo" => handle_echo(&message, context.clone()),
-            _ => panic!("invalid message type"),
+            "echo" => handle_echo(&message, context.clone()).map(|r| Some(r)),
+            _ => Ok(None),
         };
 
         let res = match response {
             Ok(r) => r,
-            Err(e) => Message::from(e),
+            Err(e) => Some(Message::from(e)),
         };
 
-        let response_str = serde_json::to_string(&res).unwrap() + "\n";
-        io::stdout().write_all(response_str.as_bytes()).unwrap();
+        if let Some(res) = res {
+            let response_str = serde_json::to_string(&res).unwrap() + "\n";
+            io::stdout().write_all(response_str.as_bytes()).unwrap();
+        }
 
         buffer.clear();
     }
@@ -135,6 +158,26 @@ fn handle_echo(msg: &Message, context: Context) -> Result<Message, anyhow::Error
             extra: Map::from_iter([("echo".to_string(), echo)]),
         },
     };
+
+    let (message_send, message_recv) = mpsc::channel::<Message>();
+
+    context.send.send(Request {
+        msg: Message {
+            src: "node".into(),
+            dest: "me".into(),
+            body: Body {
+                typ: "echo".into(),
+                msg_id: Some(69),
+                in_reply_to: None,
+                extra: Map::new(),
+            },
+        },
+        send: message_send,
+    });
+
+    for message in message_recv {
+        println!("got message: {:?}", message);
+    }
 
     Ok(response)
 }
