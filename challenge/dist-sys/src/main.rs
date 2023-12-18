@@ -7,7 +7,30 @@ use std::{
 struct Message {
     src: String,
     dest: String,
-    body: EchoBodyResponse,
+    body: Body,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
+struct BodyCommon {
+    msg_id: Option<i64>,
+    in_reply_to: Option<i64>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Debug)]
+#[serde(tag = "type")]
+enum Body {
+    #[serde(rename = "echo")]
+    Echo {
+        #[serde(flatten)]
+        common: BodyCommon,
+        echo: String,
+    },
+    #[serde(rename = "echo_ok")]
+    EchoOk {
+        #[serde(flatten)]
+        common: BodyCommon,
+        echo: String,
+    },
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -30,23 +53,28 @@ fn main() {
     while let Ok(length) = io::stdin().read_line(&mut buffer) {
         let message: Message = serde_json::from_str(&buffer).unwrap();
 
-        let response = Message {
-            src: "n1".into(),
-            dest: "c1".into(),
-            body: EchoBodyResponse {
-                r#type: "echo".into(),
-                msg_id: 1,
-                in_reply_to: Some(message.body.msg_id),
-                echo: message.body.echo,
-            },
-        };
+        println!("message {:#?}", message);
 
-        let response_str = serde_json::to_string(&response).unwrap();
+        match message.body {
+            Body::Echo { common, echo } => {
+                let response = Message {
+                    src: "n1".into(),
+                    dest: "c1".into(),
+                    body: Body::EchoOk {
+                        common: BodyCommon {
+                            msg_id: Some(1),
+                            in_reply_to: common.msg_id,
+                        },
+                        echo: echo,
+                    },
+                };
 
-        // this doesnt work
-        // io::stdout().write_all(response_str.as_bytes()).unwrap();
+                let response_str = serde_json::to_string(&response).unwrap() + "\n";
 
-        println!("{}", response_str);
+                io::stdout().write_all(response_str.as_bytes()).unwrap();
+            }
+            _ => {}
+        }
 
         buffer.clear();
     }
