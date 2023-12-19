@@ -3,9 +3,16 @@ use std::{
     io::{self, Write},
     rc::Rc,
     sync::{mpsc, Arc, Mutex},
+    task::Waker,
     thread,
 };
 
+use futures::{
+    future::BoxFuture,
+    task::{waker_ref, ArcWake},
+    Future, FutureExt,
+};
+use log::{debug, info};
 use serde_json::{Map, Value};
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
@@ -55,7 +62,128 @@ struct Request {
     send: mpsc::Sender<Message>,
 }
 
+struct AsyncExecutor {
+    queue: mpsc::Receiver<Arc<Task>>,
+    sender: mpsc::Sender<Arc<Task>>,
+}
+
+impl AsyncExecutor {
+    fn new() -> Self {
+        let (sender, queue) = mpsc::channel::<Arc<Task>>();
+
+        Self { queue, sender }
+    }
+
+    fn run(&self) {
+        while let Ok(task) = self.queue.recv() {
+            debug!("running task");
+            let mut future = task.future.lock().unwrap();
+            let waker = waker_ref(&task);
+            let context = &mut std::task::Context::from_waker(&waker);
+            let _ = future.as_mut().poll(context);
+        }
+    }
+
+    fn drop(&mut self) {
+        let _ = std::mem::replace(&mut self.sender, mpsc::channel().0);
+    }
+
+    fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) {
+        let future = future.boxed();
+        let task = Arc::new(Task {
+            future: Mutex::new(future),
+            task_sender: self.sender.clone(),
+        });
+
+        self.sender.send(task).unwrap();
+    }
+}
+
+struct Task {
+    future: Mutex<BoxFuture<'static, ()>>,
+    task_sender: mpsc::Sender<Arc<Task>>,
+}
+
+impl ArcWake for Task {
+    fn wake_by_ref(arc_self: &Arc<Self>) {
+        debug!("waking task");
+        let cloned = arc_self.clone();
+        // TODO proper error handling
+        arc_self.task_sender.send(cloned).unwrap();
+    }
+}
+
+struct TimerThenReturnElapsedFuture {
+    state: Arc<Mutex<(bool, Option<Waker>, Option<std::time::Duration>)>>,
+    duration: std::time::Duration,
+}
+
+impl TimerThenReturnElapsedFuture {
+    fn new(duration: std::time::Duration) -> Self {
+        let state = Arc::new(Mutex::new((false, Option::<Waker>::None, None)));
+
+        let state_clone = state.clone();
+        thread::spawn(move || {
+            let timer = std::time::Instant::now();
+            std::thread::sleep(duration);
+            let mut state = state_clone.lock().unwrap();
+            state.0 = true;
+            state.2 = Some(timer.elapsed());
+            if let Some(waker) = state.1.take() {
+                waker.wake();
+            }
+        });
+
+        Self { state, duration }
+    }
+}
+
+impl Future for TimerThenReturnElapsedFuture {
+    type Output = std::time::Duration;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        debug!("polling timer with duration {:?}", self.duration);
+        let mut state = self.state.lock().unwrap();
+        if state.0 {
+            return std::task::Poll::Ready(state.2.unwrap());
+        }
+
+        state.1 = Some(cx.waker().to_owned());
+        std::task::Poll::Pending
+    }
+}
+
+async fn timer() -> std::time::Duration {
+    TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(3)).await
+}
+
 fn main() {
+    pretty_env_logger::init_timed();
+
+    let mut executor = AsyncExecutor::new();
+    executor.spawn(async {
+        let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(1));
+        debug!("hello");
+        debug!("timer 2 elapsed from main: {:?}", timer().await);
+        debug!("timer 1 elapsed from main: {:?}", future1.await);
+    });
+
+    debug!("hello from main");
+
+    executor.spawn(async {
+        let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(4));
+        debug!("timer 3 elapsed from main: {:?}", future1.await);
+    });
+
+    // Drop the sender so that the executor will stop when all tasks are done
+    executor.drop();
+
+    executor.run();
+
+    debug!("done");
+
     let mut buffer = String::new();
 
     io::stdin().read_line(&mut buffer).unwrap();
@@ -176,7 +304,7 @@ fn handle_echo(msg: &Message, context: Context) -> Result<Message, anyhow::Error
     });
 
     for message in message_recv {
-        println!("got message: {:?}", message);
+        debug!("got message: {:?}", message);
     }
 
     Ok(response)
