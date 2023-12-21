@@ -1,10 +1,12 @@
 use std::{
     collections::HashMap,
     io::{self, Write},
+    process::Output,
     rc::Rc,
     sync::{mpsc, Arc, Mutex},
     task::Waker,
     thread,
+    time::Duration,
 };
 
 use futures::{
@@ -14,6 +16,7 @@ use futures::{
 };
 use log::{debug, info};
 use serde_json::{Map, Value};
+use std::collections;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct Message {
@@ -62,16 +65,72 @@ struct Request {
     send: mpsc::Sender<Message>,
 }
 
+/// Pool of threads used for blocking tasks.
+struct ThreadPool {
+    workers: Vec<Worker>,
+    capacity: usize,
+}
+
+impl ThreadPool {
+    fn new(capacity: usize) -> Self {
+        ThreadPool {
+            workers: Vec::new(),
+            capacity,
+        }
+    }
+
+    fn spawn_worker_thread(&mut self) {
+        if self.workers.len() > self.capacity {
+            return;
+        }
+
+        // TODO is Box<dyn Fn()> the right type here?
+        let (task_sender, task_receiver) = mpsc::channel::<Box<dyn Fn() + Send + 'static>>();
+        let (park_signal, park_receiver) = mpsc::channel::<bool>();
+        let handle = thread::spawn(move || {
+            loop {
+                // TODO is this the right timeout value?
+                while let Ok(task) = task_receiver.recv_timeout(Duration::from_millis(100)) {
+                    task();
+                }
+
+                // Seems like no task was received, so we need to park the thread.
+                park_signal.send(true).unwrap();
+                thread::park();
+            }
+        });
+
+        self.workers.push(Worker {
+            task_sender,
+            join_handle: handle,
+        });
+    }
+}
+
+struct Worker {
+    task_sender: mpsc::Sender<Box<dyn Fn() + Send + 'static>>,
+    join_handle: thread::JoinHandle<()>,
+}
+
+/// A basic single threaded async executor. Blocking tasks are executed in a
+/// separate thread pool. This is the model Node.js uses.
 struct AsyncExecutor {
     queue: mpsc::Receiver<Arc<Task>>,
     sender: mpsc::Sender<Arc<Task>>,
+    blocking_queue: collections::VecDeque<Arc<Task>>,
 }
 
 impl AsyncExecutor {
     fn new() -> Self {
         let (sender, queue) = mpsc::channel::<Arc<Task>>();
 
-        Self { queue, sender }
+        let blocking_queue = collections::VecDeque::new();
+
+        Self {
+            queue,
+            sender,
+            blocking_queue,
+        }
     }
 
     fn run(&self) {
@@ -97,6 +156,8 @@ impl AsyncExecutor {
 
         self.sender.send(task).unwrap();
     }
+
+    fn spawn_blocking(&self, future: impl Future<Output = ()> + 'static + Send) {}
 }
 
 struct Task {
