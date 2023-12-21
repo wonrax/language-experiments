@@ -1,9 +1,11 @@
 use std::{
     collections::HashMap,
     io::{self, Write},
-    process::Output,
     rc::Rc,
-    sync::{mpsc, Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        mpsc, Arc, Mutex,
+    },
     task::Waker,
     thread,
     time::Duration,
@@ -16,7 +18,6 @@ use futures::{
 };
 use log::{debug, info};
 use serde_json::{Map, Value};
-use std::collections;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct Message {
@@ -67,69 +68,95 @@ struct Request {
 
 /// Pool of threads used for blocking tasks.
 struct ThreadPool {
-    workers: Vec<Worker>,
     capacity: usize,
+    task_send: crossbeam_channel::Sender<BlockingTask>,
+    task_recv: crossbeam_channel::Receiver<BlockingTask>,
+    num_threads: Arc<AtomicUsize>,
+}
+
+struct BlockingTask {
+    task: Box<dyn FnOnce() -> Box<dyn std::any::Any + Send + 'static> + Send + 'static>,
+    result: Option<crossbeam_channel::Sender<Box<dyn std::any::Any + Send + 'static>>>,
 }
 
 impl ThreadPool {
     fn new(capacity: usize) -> Self {
+        let (task_send, task_recv) = crossbeam_channel::unbounded();
         ThreadPool {
-            workers: Vec::new(),
             capacity,
+            task_send,
+            task_recv,
+            num_threads: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    fn spawn_worker_thread(&mut self) {
-        if self.workers.len() > self.capacity {
-            return;
+    fn spawn_blocking<F, T>(&mut self, task: F) -> T
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: std::any::Any + Send + 'static,
+    {
+        // TODO for correctness, mutex should be used here
+        if self.num_threads.load(Ordering::Relaxed) < self.capacity {
+            self.spawn_thread();
         }
+
+        let (result_send, result_recv) = crossbeam_channel::bounded(1);
+
+        self.task_send
+            .send(BlockingTask {
+                task: Box::new(|| Box::new(task())),
+                result: Some(result_send),
+            })
+            .unwrap();
+
+        *result_recv.recv().unwrap().downcast::<T>().unwrap()
+    }
+
+    fn spawn_thread(&mut self) {
+        let task_recv = self.task_recv.clone();
 
         // TODO is Box<dyn Fn()> the right type here?
-        let (task_sender, task_receiver) = mpsc::channel::<Box<dyn Fn() + Send + 'static>>();
-        let (park_signal, park_receiver) = mpsc::channel::<bool>();
-        let handle = thread::spawn(move || {
+        self.num_threads.fetch_add(1, Ordering::Relaxed);
+        let num_threads = self.num_threads.clone();
+        thread::spawn(move || {
             loop {
                 // TODO is this the right timeout value?
-                while let Ok(task) = task_receiver.recv_timeout(Duration::from_millis(100)) {
-                    task();
+                match task_recv.recv_timeout(Duration::from_millis(100)) {
+                    Ok(task) => {
+                        let result = (task.task)();
+                        if let Some(result_sender) = task.result {
+                            result_sender.send(result).unwrap();
+                        }
+                    }
+                    Err(_) => break, // break and exit the thread
                 }
-
-                // Seems like no task was received, so we need to park the thread.
-                park_signal.send(true).unwrap();
-                thread::park();
             }
-        });
 
-        self.workers.push(Worker {
-            task_sender,
-            join_handle: handle,
+            num_threads.fetch_sub(1, Ordering::Relaxed);
         });
     }
-}
-
-struct Worker {
-    task_sender: mpsc::Sender<Box<dyn Fn() + Send + 'static>>,
-    join_handle: thread::JoinHandle<()>,
 }
 
 /// A basic single threaded async executor. Blocking tasks are executed in a
-/// separate thread pool. This is the model Node.js uses.
+/// separate thread pool. This is the model Node.js uses. In the future, this
+/// will be evolved to be a multi-threaded executor, but for now we want to test
+/// for the correctness of the async implementation first.
 struct AsyncExecutor {
     queue: mpsc::Receiver<Arc<Task>>,
     sender: mpsc::Sender<Arc<Task>>,
-    blocking_queue: collections::VecDeque<Arc<Task>>,
+    thread_pool: ThreadPool,
 }
 
 impl AsyncExecutor {
     fn new() -> Self {
         let (sender, queue) = mpsc::channel::<Arc<Task>>();
-
-        let blocking_queue = collections::VecDeque::new();
+        // TODO make this configurable
+        let thread_pool = ThreadPool::new(4);
 
         Self {
             queue,
             sender,
-            blocking_queue,
+            thread_pool,
         }
     }
 
@@ -157,7 +184,13 @@ impl AsyncExecutor {
         self.sender.send(task).unwrap();
     }
 
-    fn spawn_blocking(&self, future: impl Future<Output = ()> + 'static + Send) {}
+    fn spawn_blocking<F, T>(&mut self, f: F) -> T
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: std::any::Any + Send + 'static,
+    {
+        self.thread_pool.spawn_blocking(f)
+    }
 }
 
 struct Task {
@@ -222,6 +255,18 @@ async fn timer() -> std::time::Duration {
 
 fn main() {
     pretty_env_logger::init_timed();
+
+    let mut thread_pool = ThreadPool::new(4);
+
+    let result: Result<i32, _> = thread_pool.spawn_blocking(|| -> Result<i32, ()> {
+        debug!("blocking task");
+        std::thread::sleep(Duration::from_secs(1));
+        debug!("blocking task done");
+
+        Ok(1)
+    });
+
+    debug!("blocking task result: {:?}", result);
 
     let mut executor = AsyncExecutor::new();
     executor.spawn(async {
