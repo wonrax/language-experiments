@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{self, Write},
+    io::{self, stdin, Write},
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -13,8 +13,10 @@ use std::{
 
 use futures::{
     future::BoxFuture,
+    sink::Unfold,
+    stream::unfold,
     task::{waker_ref, ArcWake},
-    Future, FutureExt,
+    Future, FutureExt, Stream, StreamExt,
 };
 use log::{debug, info};
 use serde_json::{Map, Value};
@@ -72,6 +74,30 @@ struct ThreadPool {
     task_send: crossbeam_channel::Sender<BlockingTask>,
     task_recv: crossbeam_channel::Receiver<BlockingTask>,
     num_threads: Arc<AtomicUsize>,
+}
+
+async fn test(thread_pool: &mut ThreadPool) {
+    let stdin = stdin();
+    let (send, recv) = crossbeam_channel::unbounded::<String>();
+
+    // todo return a join handle instead of block for this to work
+    thread_pool.spawn_blocking(move || loop {
+        let mut buffer = String::new();
+        stdin.read_line(&mut buffer).unwrap();
+
+        send.send(buffer.clone()).unwrap();
+        debug!("sent line: {}", buffer);
+        buffer.clear();
+    });
+
+    unfold(0, |_| async {
+        let line = recv.recv().unwrap();
+        Some((line, 0))
+    })
+    .for_each_concurrent(None, |line| async move {
+        info!("got line: {}", line);
+    })
+    .await;
 }
 
 struct BlockingTask {
@@ -269,6 +295,10 @@ fn main() {
     debug!("blocking task result: {:?}", result);
 
     let mut executor = AsyncExecutor::new();
+    executor.spawn(async move {
+        test(&mut thread_pool).await;
+    });
+
     executor.spawn(async {
         let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(1));
         debug!("hello");
