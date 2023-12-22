@@ -1,4 +1,6 @@
 use std::{
+    borrow::BorrowMut,
+    cell::Cell,
     collections::HashMap,
     io::{self, stdin, Write},
     marker::PhantomData,
@@ -9,7 +11,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         mpsc, Arc, Mutex,
     },
-    task::Waker,
+    task::{Poll, Waker},
     thread,
     time::Duration,
 };
@@ -102,16 +104,68 @@ fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = 
     // })
 }
 
-struct AsyncStdin {
-    waker: Option<Waker>,
+struct AsyncStdinListener {
+    waker: Arc<Mutex<Option<Waker>>>,
+    recv: crossbeam_channel::Receiver<String>,
 }
 
-impl Stream for AsyncStdin {
+impl AsyncStdinListener {
+    fn new(thread_pool: &ThreadPool) -> Self {
+        let (send, recv) = crossbeam_channel::unbounded::<String>();
+
+        let mut this = Self {
+            waker: Arc::new(Mutex::new(None)),
+            recv,
+        };
+
+        let waker = this.waker.clone();
+
+        // TODO this thread won't stop running even if the future is dropped.
+        thread_pool.spawn_blocking(move || loop {
+            let stdin = stdin();
+            let mut buffer = String::new();
+            stdin.read_line(&mut buffer).unwrap();
+
+            debug!("sending line: {}", buffer);
+            match send.try_send(buffer) {
+                Err(e) => match e {
+                    crossbeam_channel::TrySendError::Full(_) => {
+                        debug!("channel full, dropping line");
+                    }
+                    crossbeam_channel::TrySendError::Disconnected(_) => {
+                        debug!("channel disconnected, exiting thread");
+                        break; // break and exit the thread
+                    }
+                },
+                _ => {}
+            }
+            if let Some(waker) = waker.lock().unwrap().take() {
+                waker.wake();
+            }
+        });
+
+        this
+    }
+}
+
+impl Stream for AsyncStdinListener {
     type Item = String;
     fn poll_next(
-        self: Pin<&mut Self>,
+        mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
+        debug!("polling async stdin");
+
+        if self.recv.is_empty() {
+            let mut r = self.waker.lock().unwrap();
+            *r = Some(cx.waker().to_owned());
+            return Poll::Pending;
+        }
+
+        match self.recv.recv() {
+            Ok(value) => Poll::Ready(Some(value)),
+            Err(_) => Poll::Pending,
+        }
     }
 }
 
@@ -185,7 +239,11 @@ impl ThreadPool {
                         Ok(task) => {
                             let result = (task.task)();
                             if let Some(result_sender) = task.result {
-                                result_sender.send(result).unwrap();
+                                // ignore the error because there are cases
+                                // where the caller doesn't need the JoinHandle
+                                // thus it's dropped and the result channel is
+                                // closed
+                                let _ = result_sender.send(result);
                             }
                         }
                         Err(_) => break, // break and exit the thread
@@ -332,13 +390,12 @@ fn main() {
     debug!("blocking task result: {:?}", result);
 
     let mut executor = AsyncExecutor::new();
+
+    let mut stdin_listener = AsyncStdinListener::new(&executor.thread_pool);
     executor.spawn(async move {
-        let stream = handle_protocol_stdio(&thread_pool);
-        stream
-            .for_each_concurrent(None, |line| async move {
-                debug!("line received {:#?}", line);
-            })
-            .await;
+        for _ in 0..2 {
+            debug!("got line: {}", stdin_listener.next().await.unwrap());
+        }
     });
 
     executor.spawn(async {
