@@ -170,6 +170,7 @@ impl Stream for AsyncStdinListener<'_> {
                 waker.wake();
             });
 
+            debug!("async stdin returning pending");
             return Poll::Pending;
         }
 
@@ -180,8 +181,8 @@ impl Stream for AsyncStdinListener<'_> {
     }
 }
 
-struct BlockingTask<'a> {
-    task: Box<dyn FnOnce() -> Box<dyn std::any::Any + Send + 'static> + Send + 'a>,
+struct BlockingTask {
+    task: Box<dyn FnOnce() -> Box<dyn std::any::Any + Send + 'static> + Send>,
     result: Option<crossbeam_channel::Sender<Box<dyn std::any::Any + Send + 'static>>>,
 }
 
@@ -203,26 +204,23 @@ where
 
 /// Pool of threads used for blocking tasks.
 #[derive(Clone)]
-struct ThreadPool<'a> {
+struct ThreadPool {
     capacity: usize,
-    task_send: crossbeam_channel::Sender<BlockingTask<'a>>,
-    task_recv: crossbeam_channel::Receiver<BlockingTask<'a>>,
+    task_send: crossbeam_channel::Sender<BlockingTask>,
+    task_recv: crossbeam_channel::Receiver<BlockingTask>,
     num_threads: Arc<AtomicUsize>,
-    /// Makes the `'a` lifetime invariant.
-    _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
 }
 
-unsafe impl Sync for ThreadPool<'_> {}
+// unsafe impl Sync for ThreadPool {}
 
-impl<'a> ThreadPool<'a> {
-    fn new(capacity: usize, marker: PhantomData<std::cell::UnsafeCell<&'a ()>>) -> Self {
+impl ThreadPool {
+    fn new(capacity: usize) -> Self {
         let (task_send, task_recv) = crossbeam_channel::unbounded();
         ThreadPool {
             capacity,
             task_send,
             task_recv,
             num_threads: Arc::new(AtomicUsize::new(0)),
-            _marker: marker,
         }
     }
 
@@ -256,34 +254,32 @@ impl<'a> ThreadPool<'a> {
         // TODO is Box<dyn Fn()> the right type here?
         self.num_threads.fetch_add(1, Ordering::Relaxed);
         let num_threads = self.num_threads.clone();
-        thread::scope(|s| {
-            thread::Builder::new()
-                .name("blocking_thread".into())
-                .spawn_scoped(s, move || {
-                    debug!("blocking thread started");
-                    loop {
-                        // TODO is this the right timeout value?
-                        match task_recv.recv_timeout(Duration::from_millis(100)) {
-                            Ok(task) => {
-                                debug!("blocking thread pool received new task");
-                                let result = (task.task)();
-                                if let Some(result_sender) = task.result {
-                                    // ignore the error because there are cases
-                                    // where the caller doesn't need the JoinHandle
-                                    // thus it's dropped and the result channel is
-                                    // closed
-                                    let _ = result_sender.send(result);
-                                }
+        thread::Builder::new()
+            .name("blocking_thread".into())
+            .spawn(move || {
+                debug!("blocking thread started");
+                loop {
+                    // TODO is this the right timeout value?
+                    match task_recv.recv_timeout(Duration::from_millis(100)) {
+                        Ok(task) => {
+                            debug!("blocking thread pool received new task");
+                            let result = (task.task)();
+                            if let Some(result_sender) = task.result {
+                                // ignore the error because there are cases
+                                // where the caller doesn't need the JoinHandle
+                                // thus it's dropped and the result channel is
+                                // closed
+                                let _ = result_sender.send(result);
                             }
-                            Err(_) => break, // break and exit the thread
                         }
+                        Err(_) => break, // break and exit the thread
                     }
+                }
 
-                    debug!("blocking thread exiting");
-                    num_threads.fetch_sub(1, Ordering::Relaxed);
-                })
-                .unwrap();
-        })
+                debug!("blocking thread exiting");
+                num_threads.fetch_sub(1, Ordering::Relaxed);
+            })
+            .unwrap();
     }
 }
 
@@ -295,14 +291,14 @@ impl<'a> ThreadPool<'a> {
 struct AsyncExecutor<'a> {
     queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
     sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
-    thread_pool: ThreadPool<'a>,
+    thread_pool: ThreadPool,
 }
 
 impl<'a> AsyncExecutor<'a> {
     fn new() -> Self {
         let (sender, queue) = crossbeam_channel::unbounded::<Arc<Task>>();
         // TODO make this configurable
-        let thread_pool = ThreadPool::new(4, PhantomData::<std::cell::UnsafeCell<&'a ()>>);
+        let thread_pool = ThreadPool::new(4);
 
         Self {
             queue,
@@ -413,7 +409,7 @@ async fn timer() -> std::time::Duration {
 fn main() {
     pretty_env_logger::init_timed();
 
-    let thread_pool = ThreadPool::new(4, PhantomData);
+    let thread_pool = ThreadPool::new(4);
 
     debug!("spawning task");
     let join = thread_pool.spawn_blocking(|| -> Result<i32, ()> {
