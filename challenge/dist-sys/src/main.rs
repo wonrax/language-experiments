@@ -2,6 +2,8 @@ use std::{
     collections::HashMap,
     io::{self, stdin, Write},
     marker::PhantomData,
+    pin::Pin,
+    process::Output,
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -15,7 +17,7 @@ use std::{
 use futures::{
     future::BoxFuture,
     sink::Unfold,
-    stream::unfold,
+    stream::{unfold, ForEachConcurrent},
     task::{waker_ref, ArcWake},
     Future, FutureExt, Stream, StreamExt,
 };
@@ -77,7 +79,7 @@ struct ThreadPool {
     num_threads: Arc<AtomicUsize>,
 }
 
-async fn test(thread_pool: &mut ThreadPool) {
+fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     let stdin = stdin();
     let (send, recv) = crossbeam_channel::unbounded::<String>();
 
@@ -91,14 +93,13 @@ async fn test(thread_pool: &mut ThreadPool) {
         buffer.clear();
     });
 
-    unfold(0, |_| async {
+    Box::pin(unfold(0i64, move |_| {
         let line = recv.recv().unwrap();
-        Some((line, 0))
-    })
-    .for_each_concurrent(None, |line| async move {
-        debug!("got line: {}", line);
-    })
-    .await;
+        async { Some((line, 0)) }
+    }))
+    // .for_each_concurrent(None, |line| async move {
+    //     debug!("got line: {}", line);
+    // })
 }
 
 struct BlockingTask {
@@ -319,7 +320,12 @@ fn main() {
 
     let mut executor = AsyncExecutor::new();
     executor.spawn(async move {
-        test(&mut thread_pool).await;
+        let stream = handle_protocol_stdio(&thread_pool);
+        stream
+            .for_each_concurrent(None, |line| async move {
+                debug!("line received {:#?}", line);
+            })
+            .await;
     });
 
     executor.spawn(async {
