@@ -96,24 +96,24 @@ fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = 
     // })
 }
 
-struct AsyncStdinListener<'a> {
+struct AsyncStdinListener {
     waker: Arc<Mutex<Option<Waker>>>,
     recv: crossbeam_channel::Receiver<String>,
     send: crossbeam_channel::Sender<String>,
-    executor: AsyncExecutor<'a>,
+    thread_pool: ThreadPool,
 }
 
-unsafe impl Send for AsyncStdinListener<'_> {}
+// unsafe impl Send for AsyncStdinListener<'_> {}
 
-impl<'a> AsyncStdinListener<'a> {
-    fn new(executor: AsyncExecutor<'a>) -> Self {
+impl AsyncStdinListener {
+    fn new(thread_pool: ThreadPool) -> Self {
         let (send, recv) = crossbeam_channel::unbounded::<String>();
 
         Self {
             waker: Arc::new(Mutex::new(None)),
             recv,
             send,
-            executor,
+            thread_pool,
         }
 
         // let waker = this.waker.clone();
@@ -144,7 +144,7 @@ impl<'a> AsyncStdinListener<'a> {
     }
 }
 
-impl Stream for AsyncStdinListener<'_> {
+impl Stream for AsyncStdinListener {
     type Item = String;
     fn poll_next(
         self: Pin<&mut Self>,
@@ -160,7 +160,7 @@ impl Stream for AsyncStdinListener<'_> {
             let send = self.send.clone();
 
             // start the operation in a separate thread
-            self.executor.spawn_blocking(move || {
+            self.thread_pool.spawn_blocking(move || {
                 let stdin = stdin();
                 let mut buffer = String::new();
                 stdin.read_line(&mut buffer).unwrap();
@@ -287,7 +287,6 @@ impl ThreadPool {
 /// separate thread pool. This is the model Node.js uses. In the future, this
 /// will be evolved to be a multi-threaded executor, but for now we want to test
 /// for the correctness of the async implementation first.
-#[derive(Clone)]
 struct AsyncExecutor<'a> {
     queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
     sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
@@ -315,6 +314,7 @@ impl<'a> AsyncExecutor<'a> {
             let context = &mut std::task::Context::from_waker(&waker);
             let _ = future.as_mut().poll(context);
         }
+        debug!("async executor stopped")
     }
 
     fn drop(&mut self) {
@@ -409,24 +409,9 @@ async fn timer() -> std::time::Duration {
 fn main() {
     pretty_env_logger::init_timed();
 
-    let thread_pool = ThreadPool::new(4);
-
-    debug!("spawning task");
-    let join = thread_pool.spawn_blocking(|| -> Result<i32, ()> {
-        debug!("blocking task");
-        std::thread::sleep(Duration::from_secs(1));
-        debug!("blocking task done");
-
-        Ok(1)
-    });
-
-    let result = join.join();
-
-    debug!("blocking task result: {:?}", result);
-
     let mut executor = AsyncExecutor::new();
 
-    let mut stdin_listener = AsyncStdinListener::new(executor.clone());
+    let mut stdin_listener = AsyncStdinListener::new(executor.thread_pool.clone());
     executor.spawn(async move {
         for _ in 0..2 {
             debug!("got line: {}", stdin_listener.next().await.unwrap());
@@ -448,7 +433,7 @@ fn main() {
     });
 
     // Drop the sender so that the executor will stop when all tasks are done
-    // executor.drop();
+    executor.drop();
 
     executor.run();
 
