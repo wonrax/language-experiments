@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     io::{self, stdin, Write},
+    marker::PhantomData,
     rc::Rc,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -95,7 +96,7 @@ async fn test(thread_pool: &mut ThreadPool) {
         Some((line, 0))
     })
     .for_each_concurrent(None, |line| async move {
-        info!("got line: {}", line);
+        debug!("got line: {}", line);
     })
     .await;
 }
@@ -103,6 +104,22 @@ async fn test(thread_pool: &mut ThreadPool) {
 struct BlockingTask {
     task: Box<dyn FnOnce() -> Box<dyn std::any::Any + Send + 'static> + Send + 'static>,
     result: Option<crossbeam_channel::Sender<Box<dyn std::any::Any + Send + 'static>>>,
+}
+
+struct JoinHandle<R>(
+    crossbeam_channel::Receiver<Box<dyn std::any::Any + Send + 'static>>,
+    PhantomData<R>,
+)
+where
+    R: std::any::Any + Send + 'static;
+
+impl<R> JoinHandle<R>
+where
+    R: std::any::Any + Send + 'static,
+{
+    fn join(self) -> R {
+        *self.0.recv().unwrap().downcast().unwrap()
+    }
 }
 
 impl ThreadPool {
@@ -116,10 +133,10 @@ impl ThreadPool {
         }
     }
 
-    fn spawn_blocking<F, T>(&mut self, task: F) -> T
+    fn spawn_blocking<F, R>(&mut self, task: F) -> JoinHandle<R>
     where
-        F: FnOnce() -> T + Send + 'static,
-        T: std::any::Any + Send + 'static,
+        F: FnOnce() -> R + Send + 'static,
+        R: std::any::Any + Send + 'static,
     {
         // TODO for correctness, mutex should be used here
         if self.num_threads.load(Ordering::Relaxed) < self.capacity {
@@ -135,7 +152,8 @@ impl ThreadPool {
             })
             .unwrap();
 
-        *result_recv.recv().unwrap().downcast::<T>().unwrap()
+        // *result_recv.recv().unwrap().downcast::<R>().unwrap()
+        JoinHandle(result_recv, PhantomData)
     }
 
     fn spawn_thread(&mut self) {
@@ -144,22 +162,25 @@ impl ThreadPool {
         // TODO is Box<dyn Fn()> the right type here?
         self.num_threads.fetch_add(1, Ordering::Relaxed);
         let num_threads = self.num_threads.clone();
-        thread::spawn(move || {
-            loop {
-                // TODO is this the right timeout value?
-                match task_recv.recv_timeout(Duration::from_millis(100)) {
-                    Ok(task) => {
-                        let result = (task.task)();
-                        if let Some(result_sender) = task.result {
-                            result_sender.send(result).unwrap();
+        thread::Builder::new()
+            .name("blocking_thread".into())
+            .spawn(move || {
+                loop {
+                    // TODO is this the right timeout value?
+                    match task_recv.recv_timeout(Duration::from_millis(100)) {
+                        Ok(task) => {
+                            let result = (task.task)();
+                            if let Some(result_sender) = task.result {
+                                result_sender.send(result).unwrap();
+                            }
                         }
+                        Err(_) => break, // break and exit the thread
                     }
-                    Err(_) => break, // break and exit the thread
                 }
-            }
 
-            num_threads.fetch_sub(1, Ordering::Relaxed);
-        });
+                num_threads.fetch_sub(1, Ordering::Relaxed);
+            })
+            .unwrap();
     }
 }
 
@@ -210,10 +231,10 @@ impl AsyncExecutor {
         self.sender.send(task).unwrap();
     }
 
-    fn spawn_blocking<F, T>(&mut self, f: F) -> T
+    fn spawn_blocking<F, R>(&mut self, f: F) -> JoinHandle<R>
     where
-        F: FnOnce() -> T + Send + 'static,
-        T: std::any::Any + Send + 'static,
+        F: FnOnce() -> R + Send + 'static,
+        R: std::any::Any + Send + 'static,
     {
         self.thread_pool.spawn_blocking(f)
     }
@@ -284,13 +305,15 @@ fn main() {
 
     let mut thread_pool = ThreadPool::new(4);
 
-    let result: Result<i32, _> = thread_pool.spawn_blocking(|| -> Result<i32, ()> {
+    let join = thread_pool.spawn_blocking(|| -> Result<i32, ()> {
         debug!("blocking task");
         std::thread::sleep(Duration::from_secs(1));
         debug!("blocking task done");
 
         Ok(1)
     });
+
+    let result = join.join();
 
     debug!("blocking task result: {:?}", result);
 
