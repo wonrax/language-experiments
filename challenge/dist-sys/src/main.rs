@@ -133,7 +133,7 @@ impl ThreadPool {
         }
     }
 
-    fn spawn_blocking<F, R>(&mut self, task: F) -> JoinHandle<R>
+    fn spawn_blocking<F, R>(&self, task: F) -> JoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: std::any::Any + Send + 'static,
@@ -156,7 +156,7 @@ impl ThreadPool {
         JoinHandle(result_recv, PhantomData)
     }
 
-    fn spawn_thread(&mut self) {
+    fn spawn_thread(&self) {
         let task_recv = self.task_recv.clone();
 
         // TODO is Box<dyn Fn()> the right type here?
