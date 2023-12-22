@@ -80,10 +80,9 @@ struct ThreadPool {
 }
 
 fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = String> + Send>> {
-    let stdin = stdin();
     let (send, recv) = crossbeam_channel::unbounded::<String>();
 
-    // todo return a join handle instead of block for this to work
+    let stdin = stdin();
     thread_pool.spawn_blocking(move || loop {
         let mut buffer = String::new();
         stdin.read_line(&mut buffer).unwrap();
@@ -93,13 +92,27 @@ fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = 
         buffer.clear();
     });
 
-    Box::pin(unfold(0i64, move |_| {
-        let line = recv.recv().unwrap();
-        async { Some((line, 0)) }
+    Box::pin(unfold(recv, |recv| async {
+        let result = recv.recv().unwrap();
+
+        Some((result, recv))
     }))
     // .for_each_concurrent(None, |line| async move {
     //     debug!("got line: {}", line);
     // })
+}
+
+struct AsyncStdin {
+    waker: Option<Waker>,
+}
+
+impl Stream for AsyncStdin {
+    type Item = String;
+    fn poll_next(
+        self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+    }
 }
 
 struct BlockingTask {
