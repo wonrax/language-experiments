@@ -73,14 +73,6 @@ struct Request {
     send: mpsc::Sender<Message>,
 }
 
-/// Pool of threads used for blocking tasks.
-struct ThreadPool {
-    capacity: usize,
-    task_send: crossbeam_channel::Sender<BlockingTask>,
-    task_recv: crossbeam_channel::Receiver<BlockingTask>,
-    num_threads: Arc<AtomicUsize>,
-}
-
 fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = String> + Send>> {
     let (send, recv) = crossbeam_channel::unbounded::<String>();
 
@@ -104,61 +96,80 @@ fn handle_protocol_stdio(thread_pool: &ThreadPool) -> Pin<Box<dyn Stream<Item = 
     // })
 }
 
-struct AsyncStdinListener {
+struct AsyncStdinListener<'a> {
     waker: Arc<Mutex<Option<Waker>>>,
     recv: crossbeam_channel::Receiver<String>,
+    send: crossbeam_channel::Sender<String>,
+    executor: AsyncExecutor<'a>,
 }
 
-impl AsyncStdinListener {
-    fn new(thread_pool: &ThreadPool) -> Self {
+unsafe impl Send for AsyncStdinListener<'_> {}
+
+impl<'a> AsyncStdinListener<'a> {
+    fn new(executor: AsyncExecutor<'a>) -> Self {
         let (send, recv) = crossbeam_channel::unbounded::<String>();
 
-        let mut this = Self {
+        Self {
             waker: Arc::new(Mutex::new(None)),
             recv,
-        };
+            send,
+            executor,
+        }
 
-        let waker = this.waker.clone();
+        // let waker = this.waker.clone();
 
         // TODO this thread won't stop running even if the future is dropped.
-        thread_pool.spawn_blocking(move || loop {
-            let stdin = stdin();
-            let mut buffer = String::new();
-            stdin.read_line(&mut buffer).unwrap();
+        // thread_pool.spawn_blocking(move || loop {
+        //     let stdin = stdin();
+        //     let mut buffer = String::new();
+        //     stdin.read_line(&mut buffer).unwrap();
 
-            debug!("sending line: {}", buffer);
-            match send.try_send(buffer) {
-                Err(e) => match e {
-                    crossbeam_channel::TrySendError::Full(_) => {
-                        debug!("channel full, dropping line");
-                    }
-                    crossbeam_channel::TrySendError::Disconnected(_) => {
-                        debug!("channel disconnected, exiting thread");
-                        break; // break and exit the thread
-                    }
-                },
-                _ => {}
-            }
-            if let Some(waker) = waker.lock().unwrap().take() {
-                waker.wake();
-            }
-        });
-
-        this
+        //     debug!("sending line: {}", buffer);
+        //     match send.try_send(buffer) {
+        //         Err(e) => match e {
+        //             crossbeam_channel::TrySendError::Full(_) => {
+        //                 debug!("channel full, dropping line");
+        //             }
+        //             crossbeam_channel::TrySendError::Disconnected(_) => {
+        //                 debug!("channel disconnected, exiting thread");
+        //                 break; // break and exit the thread
+        //             }
+        //         },
+        //         _ => {}
+        //     }
+        //     if let Some(waker) = waker.lock().unwrap().take() {
+        //         waker.wake();
+        //     }
+        // });
     }
 }
 
-impl Stream for AsyncStdinListener {
+impl Stream for AsyncStdinListener<'_> {
     type Item = String;
     fn poll_next(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> Poll<Option<Self::Item>> {
         debug!("polling async stdin");
 
         if self.recv.is_empty() {
             let mut r = self.waker.lock().unwrap();
-            *r = Some(cx.waker().to_owned());
+            *r = Some(cx.waker().clone());
+
+            let waker = cx.waker().clone();
+            let send = self.send.clone();
+
+            // start the operation in a separate thread
+            self.executor.spawn_blocking(move || {
+                let stdin = stdin();
+                let mut buffer = String::new();
+                stdin.read_line(&mut buffer).unwrap();
+
+                debug!("sending line: {}", buffer);
+                send.send(buffer).unwrap();
+                waker.wake();
+            });
+
             return Poll::Pending;
         }
 
@@ -169,8 +180,8 @@ impl Stream for AsyncStdinListener {
     }
 }
 
-struct BlockingTask {
-    task: Box<dyn FnOnce() -> Box<dyn std::any::Any + Send + 'static> + Send + 'static>,
+struct BlockingTask<'a> {
+    task: Box<dyn FnOnce() -> Box<dyn std::any::Any + Send + 'static> + Send + 'a>,
     result: Option<crossbeam_channel::Sender<Box<dyn std::any::Any + Send + 'static>>>,
 }
 
@@ -190,14 +201,28 @@ where
     }
 }
 
-impl ThreadPool {
-    fn new(capacity: usize) -> Self {
+/// Pool of threads used for blocking tasks.
+#[derive(Clone)]
+struct ThreadPool<'a> {
+    capacity: usize,
+    task_send: crossbeam_channel::Sender<BlockingTask<'a>>,
+    task_recv: crossbeam_channel::Receiver<BlockingTask<'a>>,
+    num_threads: Arc<AtomicUsize>,
+    /// Makes the `'a` lifetime invariant.
+    _marker: PhantomData<std::cell::UnsafeCell<&'a ()>>,
+}
+
+unsafe impl Sync for ThreadPool<'_> {}
+
+impl<'a> ThreadPool<'a> {
+    fn new(capacity: usize, marker: PhantomData<std::cell::UnsafeCell<&'a ()>>) -> Self {
         let (task_send, task_recv) = crossbeam_channel::unbounded();
         ThreadPool {
             capacity,
             task_send,
             task_recv,
             num_threads: Arc::new(AtomicUsize::new(0)),
+            _marker: marker,
         }
     }
 
@@ -207,10 +232,6 @@ impl ThreadPool {
         R: std::any::Any + Send + 'static,
     {
         // TODO for correctness, mutex should be used here
-        if self.num_threads.load(Ordering::Relaxed) < self.capacity {
-            self.spawn_thread();
-        }
-
         let (result_send, result_recv) = crossbeam_channel::bounded(1);
 
         self.task_send
@@ -220,39 +241,49 @@ impl ThreadPool {
             })
             .unwrap();
 
+        if self.num_threads.load(Ordering::Relaxed) < self.capacity {
+            self.spawn_thread();
+        }
+
         // *result_recv.recv().unwrap().downcast::<R>().unwrap()
         JoinHandle(result_recv, PhantomData)
     }
 
     fn spawn_thread(&self) {
+        debug!("spawning new thread");
         let task_recv = self.task_recv.clone();
 
         // TODO is Box<dyn Fn()> the right type here?
         self.num_threads.fetch_add(1, Ordering::Relaxed);
         let num_threads = self.num_threads.clone();
-        thread::Builder::new()
-            .name("blocking_thread".into())
-            .spawn(move || {
-                loop {
-                    // TODO is this the right timeout value?
-                    match task_recv.recv_timeout(Duration::from_millis(100)) {
-                        Ok(task) => {
-                            let result = (task.task)();
-                            if let Some(result_sender) = task.result {
-                                // ignore the error because there are cases
-                                // where the caller doesn't need the JoinHandle
-                                // thus it's dropped and the result channel is
-                                // closed
-                                let _ = result_sender.send(result);
+        thread::scope(|s| {
+            thread::Builder::new()
+                .name("blocking_thread".into())
+                .spawn_scoped(s, move || {
+                    debug!("blocking thread started");
+                    loop {
+                        // TODO is this the right timeout value?
+                        match task_recv.recv_timeout(Duration::from_millis(100)) {
+                            Ok(task) => {
+                                debug!("blocking thread pool received new task");
+                                let result = (task.task)();
+                                if let Some(result_sender) = task.result {
+                                    // ignore the error because there are cases
+                                    // where the caller doesn't need the JoinHandle
+                                    // thus it's dropped and the result channel is
+                                    // closed
+                                    let _ = result_sender.send(result);
+                                }
                             }
+                            Err(_) => break, // break and exit the thread
                         }
-                        Err(_) => break, // break and exit the thread
                     }
-                }
 
-                num_threads.fetch_sub(1, Ordering::Relaxed);
-            })
-            .unwrap();
+                    debug!("blocking thread exiting");
+                    num_threads.fetch_sub(1, Ordering::Relaxed);
+                })
+                .unwrap();
+        })
     }
 }
 
@@ -260,17 +291,18 @@ impl ThreadPool {
 /// separate thread pool. This is the model Node.js uses. In the future, this
 /// will be evolved to be a multi-threaded executor, but for now we want to test
 /// for the correctness of the async implementation first.
-struct AsyncExecutor {
-    queue: mpsc::Receiver<Arc<Task>>,
-    sender: mpsc::Sender<Arc<Task>>,
-    thread_pool: ThreadPool,
+#[derive(Clone)]
+struct AsyncExecutor<'a> {
+    queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
+    sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
+    thread_pool: ThreadPool<'a>,
 }
 
-impl AsyncExecutor {
+impl<'a> AsyncExecutor<'a> {
     fn new() -> Self {
-        let (sender, queue) = mpsc::channel::<Arc<Task>>();
+        let (sender, queue) = crossbeam_channel::unbounded::<Arc<Task>>();
         // TODO make this configurable
-        let thread_pool = ThreadPool::new(4);
+        let thread_pool = ThreadPool::new(4, PhantomData::<std::cell::UnsafeCell<&'a ()>>);
 
         Self {
             queue,
@@ -290,11 +322,13 @@ impl AsyncExecutor {
     }
 
     fn drop(&mut self) {
-        let _ = std::mem::replace(&mut self.sender, mpsc::channel().0);
+        let _ = std::mem::replace(&mut self.sender, crossbeam_channel::unbounded().0);
     }
 
-    fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) {
-        let future = future.boxed();
+    /// Future is not needed to be Send since we're doing single threaded but
+    /// the ArcWake trait requires it for more general use cases.
+    fn spawn(&self, future: impl Future<Output = ()> + 'a + Send) {
+        let future = Box::pin(future);
         let task = Arc::new(Task {
             future: Mutex::new(future),
             task_sender: self.sender.clone(),
@@ -303,21 +337,25 @@ impl AsyncExecutor {
         self.sender.send(task).unwrap();
     }
 
-    fn spawn_blocking<F, R>(&mut self, f: F) -> JoinHandle<R>
+    fn spawn_blocking<F, R>(&self, f: F) -> JoinHandle<R>
     where
         F: FnOnce() -> R + Send + 'static,
         R: std::any::Any + Send + 'static,
     {
         self.thread_pool.spawn_blocking(f)
     }
+
+    fn test() -> impl Send {
+        ()
+    }
 }
 
-struct Task {
-    future: Mutex<BoxFuture<'static, ()>>,
-    task_sender: mpsc::Sender<Arc<Task>>,
+struct Task<'a> {
+    future: Mutex<Pin<Box<dyn Future<Output = ()> + Send + 'a>>>,
+    task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
 }
 
-impl ArcWake for Task {
+impl ArcWake for Task<'_> {
     fn wake_by_ref(arc_self: &Arc<Self>) {
         debug!("waking task");
         let cloned = arc_self.clone();
@@ -375,8 +413,9 @@ async fn timer() -> std::time::Duration {
 fn main() {
     pretty_env_logger::init_timed();
 
-    let mut thread_pool = ThreadPool::new(4);
+    let thread_pool = ThreadPool::new(4, PhantomData);
 
+    debug!("spawning task");
     let join = thread_pool.spawn_blocking(|| -> Result<i32, ()> {
         debug!("blocking task");
         std::thread::sleep(Duration::from_secs(1));
@@ -391,7 +430,7 @@ fn main() {
 
     let mut executor = AsyncExecutor::new();
 
-    let mut stdin_listener = AsyncStdinListener::new(&executor.thread_pool);
+    let mut stdin_listener = AsyncStdinListener::new(executor.clone());
     executor.spawn(async move {
         for _ in 0..2 {
             debug!("got line: {}", stdin_listener.next().await.unwrap());
@@ -413,7 +452,7 @@ fn main() {
     });
 
     // Drop the sender so that the executor will stop when all tasks are done
-    executor.drop();
+    // executor.drop();
 
     executor.run();
 
