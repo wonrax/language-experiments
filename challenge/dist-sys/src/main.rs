@@ -1,6 +1,6 @@
 use std::{
-    borrow::BorrowMut,
-    cell::Cell,
+    borrow::{Borrow, BorrowMut},
+    cell::{Cell, RefCell},
     collections::HashMap,
     io::{self, stdin, Write},
     marker::PhantomData,
@@ -25,6 +25,14 @@ use futures::{
 };
 use log::{debug, info};
 use serde_json::{Map, Value};
+
+thread_local! {
+    static EXECUTOR: RefCell<AsyncExecutor<'static>> = RefCell::new(AsyncExecutor::new());
+}
+
+fn get_executor() -> AsyncExecutor<'static> {
+    EXECUTOR.with(|executor| executor.borrow().clone())
+}
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct Message {
@@ -100,20 +108,18 @@ struct AsyncStdinListener {
     waker: Arc<Mutex<Option<Waker>>>,
     recv: crossbeam_channel::Receiver<String>,
     send: crossbeam_channel::Sender<String>,
-    thread_pool: ThreadPool,
 }
 
 // unsafe impl Send for AsyncStdinListener<'_> {}
 
 impl AsyncStdinListener {
-    fn new(thread_pool: ThreadPool) -> Self {
+    fn new() -> Self {
         let (send, recv) = crossbeam_channel::unbounded::<String>();
 
         Self {
             waker: Arc::new(Mutex::new(None)),
             recv,
             send,
-            thread_pool,
         }
 
         // let waker = this.waker.clone();
@@ -160,7 +166,8 @@ impl Stream for AsyncStdinListener {
             let send = self.send.clone();
 
             // start the operation in a separate thread
-            self.thread_pool.spawn_blocking(move || {
+            let executor = get_executor();
+            executor.spawn_blocking(move || {
                 let stdin = stdin();
                 let mut buffer = String::new();
                 stdin.read_line(&mut buffer).unwrap();
@@ -287,6 +294,7 @@ impl ThreadPool {
 /// separate thread pool. This is the model Node.js uses. In the future, this
 /// will be evolved to be a multi-threaded executor, but for now we want to test
 /// for the correctness of the async implementation first.
+#[derive(Clone)]
 struct AsyncExecutor<'a> {
     queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
     sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
@@ -411,7 +419,7 @@ fn main() {
 
     let mut executor = AsyncExecutor::new();
 
-    let mut stdin_listener = AsyncStdinListener::new(executor.thread_pool.clone());
+    let mut stdin_listener = AsyncStdinListener::new();
     executor.spawn(async move {
         for _ in 0..2 {
             debug!("got line: {}", stdin_listener.next().await.unwrap());
