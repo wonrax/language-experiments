@@ -7,6 +7,8 @@ I am and will be doing the following:
 -   `[In Progress]` **Plugin system** – a system I originally designed in Go at work.
     It supports application lifecycle (on start, on destroy, etc., inspired by
     Unity) for each plugin and a callback driven event dispatcher.
+-   `[In Progress]` **Asynchronous runtime** – A runtime inspired heavily by Tokio and
+    smol which can schedule and run Rust's futures.
 
 ##### Data structures
 - `[Planned]` Re-implement vec (ref: [^1])
