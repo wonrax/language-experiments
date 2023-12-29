@@ -1,5 +1,5 @@
 [workspace]
-members = ["architect/plugin-system", "challenge/dist-sys"]
+members = ["async-runtime", "architect/plugin-system", "challenge/dist-sys"]
 
 [package]
 name = "rust-experiments"
@@ -11,3 +11,6 @@ path = "lib.rs"
 
 [dependencies]
 plugin-system = { path = "architect/plugin-system" }
+
+[workspace.dependencies]
+async-runtime = { path = "async-runtime" }
