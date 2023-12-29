@@ -16,8 +16,11 @@
                 "value": "trace"
             }],
             "externalConsole": false,
-            "MIMode": "gdb",
             "preLaunchTask": "cargo debug build dist-sys",
+            "MIMode": "gdb",
+            "osx": {
+                "MIMode": "lldb"
+            },
             "setupCommands": [
                 {
                     "description": "Enable pretty-printing for gdb",
