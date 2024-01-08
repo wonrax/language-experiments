@@ -100,7 +100,11 @@ impl Inner<'static> {
                 std::task::Poll::Ready(result) => {
                     debug!("task finished");
                     if let Some(result_sender) = &task.result_sender {
-                        result_sender.send(result).unwrap();
+                        // ignore the error because there are cases
+                        // where the caller doesn't need the JoinHandle
+                        // thus it's dropped and the result channel is
+                        // closed
+                        let _ = result_sender.send(result);
                     }
                 }
             }
@@ -119,7 +123,7 @@ impl Inner<'static> {
         R: Send + 'static,
     {
         let future = Box::pin(async {
-            let boxed: Box<dyn Any + Send + 'static> = Box::new(future.await);
+            let boxed: Box<TaskResult> = Box::new(future.await);
             boxed
         });
 
@@ -127,6 +131,7 @@ impl Inner<'static> {
 
         let task = Arc::new(Task {
             future: Mutex::new(future),
+            task_sender: self.sender.clone(),
             result_sender: Some(result_send),
         });
 
@@ -140,9 +145,12 @@ impl Inner<'static> {
     }
 }
 
+type TaskResult = dyn Any + Send + 'static;
+
 struct Task<'a> {
-    future: Mutex<Pin<Box<dyn Future<Output = Box<dyn Any + Send + 'static>> + Send + 'a>>>,
-    result_sender: Option<crossbeam_channel::Sender<Box<dyn Any + Send + 'static>>>,
+    future: Mutex<Pin<Box<dyn Future<Output = Box<TaskResult>> + Send + 'a>>>,
+    task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
+    result_sender: Option<crossbeam_channel::Sender<Box<TaskResult>>>,
 }
 
 impl ArcWake for Task<'static> {
@@ -150,6 +158,6 @@ impl ArcWake for Task<'static> {
         debug!("waking task");
         let cloned = arc_self.to_owned();
         // TODO proper error handling
-        get_runtime().queue_task(cloned);
+        arc_self.task_sender.send(cloned).unwrap();
     }
 }
