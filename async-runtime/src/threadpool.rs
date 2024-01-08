@@ -26,6 +26,12 @@ impl<R> JoinHandle<R>
 where
     R: std::any::Any + Send + 'static,
 {
+    pub fn new(
+        result_recv: crossbeam_channel::Receiver<Box<dyn std::any::Any + Send + 'static>>,
+    ) -> Self {
+        JoinHandle(result_recv, PhantomData)
+    }
+
     pub fn join(self) -> R {
         *self.0.recv().unwrap().downcast().unwrap()
     }
