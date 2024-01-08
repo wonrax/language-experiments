@@ -4,6 +4,7 @@ use futures::{
 };
 use log::{debug, info};
 use std::{
+    any::Any,
     borrow::BorrowMut,
     cell::{Ref, RefCell},
     os::unix::thread,
@@ -68,6 +69,10 @@ impl AsyncRuntime<'static> {
     pub fn run(&self) {
         self.inner.run();
     }
+
+    pub fn queue_task(&self, task: Arc<Task<'static>>) {
+        self.inner.queue_task(task);
+    }
 }
 
 struct Inner<'a> {
@@ -75,7 +80,7 @@ struct Inner<'a> {
     sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
 }
 
-impl<'a> Inner<'a> {
+impl Inner<'static> {
     fn new() -> Self {
         let (sender, queue) = crossbeam_channel::unbounded::<Arc<Task>>();
         Self { queue, sender }
@@ -87,7 +92,18 @@ impl<'a> Inner<'a> {
             let mut future = task.future.lock().unwrap();
             let waker = waker_ref(&task);
             let context = &mut std::task::Context::from_waker(&waker);
-            let _ = future.as_mut().poll(context);
+
+            match future.as_mut().poll(context) {
+                std::task::Poll::Pending => {
+                    debug!("task not ready");
+                }
+                std::task::Poll::Ready(result) => {
+                    debug!("task finished");
+                    if let Some(result_sender) = &task.result_sender {
+                        result_sender.send(result).unwrap();
+                    }
+                }
+            }
         }
         debug!("async executor stopped")
     }
@@ -98,27 +114,42 @@ impl<'a> Inner<'a> {
 
     /// Future is not needed to be Send since we're doing single threaded but
     /// the ArcWake trait requires it for more general use cases.
-    fn spawn(&self, future: impl Future<Output = ()> + 'a + Send) {
-        let future = Box::pin(future);
-        let task = Arc::new(Task {
-            future: Mutex::new(future),
-            task_sender: self.sender.clone(),
+    fn spawn<R>(&self, future: impl Future<Output = R> + Send + 'static) -> JoinHandle<R>
+    where
+        R: Send + 'static,
+    {
+        let future = Box::pin(async {
+            let boxed: Box<dyn Any + Send + 'static> = Box::new(future.await);
+            boxed
         });
 
+        let (result_send, result_recv) = crossbeam_channel::bounded(1);
+
+        let task = Arc::new(Task {
+            future: Mutex::new(future),
+            result_sender: Some(result_send),
+        });
+
+        self.sender.send(task).unwrap();
+
+        JoinHandle::new(result_recv)
+    }
+
+    fn queue_task(&self, task: Arc<Task<'static>>) {
         self.sender.send(task).unwrap();
     }
 }
 
 struct Task<'a> {
-    future: Mutex<Pin<Box<dyn Future<Output = ()> + Send + 'a>>>,
-    task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
+    future: Mutex<Pin<Box<dyn Future<Output = Box<dyn Any + Send + 'static>> + Send + 'a>>>,
+    result_sender: Option<crossbeam_channel::Sender<Box<dyn Any + Send + 'static>>>,
 }
 
-impl ArcWake for Task<'_> {
+impl ArcWake for Task<'static> {
     fn wake_by_ref(arc_self: &Arc<Self>) {
         debug!("waking task");
-        let cloned = arc_self.clone();
+        let cloned = arc_self.to_owned();
         // TODO proper error handling
-        arc_self.task_sender.send(cloned).unwrap();
+        get_runtime().queue_task(cloned);
     }
 }
