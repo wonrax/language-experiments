@@ -15,47 +15,48 @@ use std::{
 use crate::threadpool::{JoinHandle, ThreadPool};
 
 thread_local! {
-    static EXECUTOR: RefCell<Option<AsyncRuntime<'static>>> = RefCell::new(None);
+    static HANDLE: RefCell<Option<Handle>> = RefCell::new(None);
 }
 
-pub fn get_runtime() -> AsyncRuntime<'static> {
-    EXECUTOR.with(|executor| {
-        executor
-            .borrow()
-            .clone()
-            .expect("The async runtime is None, maybe you forgot to make one")
-    })
-}
-
-pub fn new_runtime() -> AsyncRuntime<'static> {
-    let runtime = AsyncRuntime::new();
-    EXECUTOR.with(|executor| {
-        *executor.borrow_mut() = Some(runtime.clone());
-    });
-    runtime
-}
-
-/// A basic single threaded async executor. Blocking tasks are executed in a
-/// separate thread pool. This is the model Node.js uses. In the future, this
-/// will be evolved to be a multi-threaded executor, but for now we want to test
-/// for the correctness of the async implementation first.
 #[derive(Clone)]
-pub struct AsyncRuntime<'a> {
-    inner: Arc<Inner<'a>>,
+pub struct Handle {
+    task_sender: crossbeam_channel::Sender<Arc<Task<'static>>>,
     thread_pool: Arc<ThreadPool>,
 }
 
-impl AsyncRuntime<'static> {
-    pub fn new() -> Self {
-        let inner = Arc::new(Inner::new());
-        let thread_pool = Arc::new(ThreadPool::new(4));
-        let runtime = Self { inner, thread_pool };
-
-        runtime
+impl Handle {
+    fn new(
+        task_sender: crossbeam_channel::Sender<Arc<Task<'static>>>,
+        thread_pool: Arc<ThreadPool>,
+    ) -> Self {
+        Self {
+            task_sender,
+            thread_pool,
+        }
     }
 
-    pub fn spawn(&self, future: impl Future<Output = ()> + 'static + Send) {
-        self.inner.spawn(future);
+    /// Future is not needed to be Send since we're doing single threaded but
+    /// the ArcWake trait requires it for more general use cases.
+    pub fn spawn<R>(&self, future: impl Future<Output = R> + Send + 'static) -> JoinHandle<R>
+    where
+        R: Send + 'static,
+    {
+        let future = Box::pin(async {
+            let boxed: Box<TaskResult> = Box::new(future.await);
+            boxed
+        });
+
+        let (result_send, result_recv) = crossbeam_channel::bounded(1);
+
+        let task = Arc::new(Task {
+            future: Mutex::new(future),
+            task_sender: self.task_sender.clone(),
+            result_sender: Some(result_send),
+        });
+
+        self.task_sender.send(task).unwrap();
+
+        JoinHandle::new(result_recv)
     }
 
     pub fn spawn_blocking<F, R>(&self, task: F) -> JoinHandle<R>
@@ -65,22 +66,43 @@ impl AsyncRuntime<'static> {
     {
         self.thread_pool.spawn_blocking(task)
     }
-
-    pub fn run(&self) {
-        self.inner.run();
-    }
-
-    pub fn queue_task(&self, task: Arc<Task<'static>>) {
-        self.inner.queue_task(task);
-    }
 }
 
-struct Inner<'a> {
+pub fn current() -> Handle {
+    HANDLE.with(|handle| {
+        handle
+            .borrow()
+            .clone()
+            .expect("The async runtime is None, maybe you forgot to make one")
+    })
+}
+
+pub fn new_runtime() -> Handle {
+    let executor = Executor::new();
+    let thread_pool = Arc::new(ThreadPool::new(4));
+
+    let handle = Handle::new(executor.sender.clone(), thread_pool.clone());
+
+    thread_pool.spawn_blocking(move || executor.run());
+
+    HANDLE.with(|h| {
+        *h.borrow_mut() = Some(handle.clone());
+    });
+
+    handle
+}
+
+/// A basic single threaded async executor. Blocking tasks are executed in a
+/// separate thread pool. This is the model Node.js uses. In the future, this
+/// will be evolved to be a multi-threaded executor, but for now we want to test
+/// for the correctness of the async implementation first.
+struct Executor<'a> {
     queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
     sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
 }
 
-impl Inner<'static> {
+// TODO implement lifetime correctly
+impl Executor<'static> {
     fn new() -> Self {
         let (sender, queue) = crossbeam_channel::unbounded::<Arc<Task>>();
         Self { queue, sender }
@@ -114,34 +136,6 @@ impl Inner<'static> {
 
     fn stop(&mut self) {
         let _ = std::mem::replace(&mut self.sender, crossbeam_channel::unbounded().0);
-    }
-
-    /// Future is not needed to be Send since we're doing single threaded but
-    /// the ArcWake trait requires it for more general use cases.
-    fn spawn<R>(&self, future: impl Future<Output = R> + Send + 'static) -> JoinHandle<R>
-    where
-        R: Send + 'static,
-    {
-        let future = Box::pin(async {
-            let boxed: Box<TaskResult> = Box::new(future.await);
-            boxed
-        });
-
-        let (result_send, result_recv) = crossbeam_channel::bounded(1);
-
-        let task = Arc::new(Task {
-            future: Mutex::new(future),
-            task_sender: self.sender.clone(),
-            result_sender: Some(result_send),
-        });
-
-        self.sender.send(task).unwrap();
-
-        JoinHandle::new(result_recv)
-    }
-
-    fn queue_task(&self, task: Arc<Task<'static>>) {
-        self.sender.send(task).unwrap();
     }
 }
 

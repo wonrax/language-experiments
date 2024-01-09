@@ -8,7 +8,7 @@ use std::{
     thread,
 };
 
-use async_runtime::runtime::{get_runtime, new_runtime};
+use async_runtime::runtime::{current, new_runtime};
 use futures::{Future, Stream, StreamExt};
 use log::{debug, info};
 use serde_json::{Map, Value};
@@ -122,7 +122,7 @@ impl Stream for AsyncStdinListener {
             let send = self.send.clone();
 
             // start the operation in a separate thread
-            let runtime = get_runtime();
+            let runtime = current();
             runtime.spawn_blocking(move || {
                 let stdin = stdin();
                 let mut buffer = String::new();
@@ -215,8 +215,6 @@ fn main() {
         let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(4));
         debug!("timer 3 elapsed from main: {:?}", future1.await);
     });
-
-    runtime.run();
 
     // Drop the sender so that the executor will stop when all tasks are done
     // runtime.drop();
