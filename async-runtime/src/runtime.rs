@@ -77,17 +77,21 @@ pub fn current() -> Handle {
     })
 }
 
+pub fn set_current(handle: Handle) {
+    HANDLE.with(|h| {
+        *h.borrow_mut() = Some(handle);
+    });
+}
+
 pub fn new_runtime() -> Handle {
     let executor = Executor::new();
     let thread_pool = Arc::new(ThreadPool::new(4));
 
     let handle = Handle::new(executor.sender.clone(), thread_pool.clone());
 
-    thread_pool.spawn_blocking(move || executor.run());
+    set_current(handle.clone());
 
-    HANDLE.with(|h| {
-        *h.borrow_mut() = Some(handle.clone());
-    });
+    thread_pool.spawn_blocking(move || executor.run());
 
     handle
 }
