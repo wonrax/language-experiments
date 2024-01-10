@@ -66,6 +66,13 @@ impl Handle {
     {
         self.thread_pool.spawn_blocking(task)
     }
+
+    pub fn block_on<R>(&self, future: impl Future<Output = R> + Send + 'static) -> R
+    where
+        R: Send + 'static,
+    {
+        self.spawn(future).join()
+    }
 }
 
 pub fn current() -> Handle {

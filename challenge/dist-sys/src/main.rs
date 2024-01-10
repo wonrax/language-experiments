@@ -216,6 +216,11 @@ fn main() {
         debug!("timer 3 elapsed from main: {:?}", future1.await);
     });
 
+    runtime.block_on(async {
+        let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(10));
+        future1.await;
+    });
+
     // Drop the sender so that the executor will stop when all tasks are done
     // runtime.drop();
 
