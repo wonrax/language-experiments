@@ -61,7 +61,8 @@ struct Request {
     send: mpsc::Sender<Message>,
 }
 
-struct AsyncStdinListener {
+// Listens to stdin and read lines in a loop.
+struct StdinListener {
     waker: Arc<Mutex<Option<Waker>>>,
     recv: crossbeam_channel::Receiver<String>,
     send: crossbeam_channel::Sender<String>,
@@ -69,7 +70,7 @@ struct AsyncStdinListener {
 
 // unsafe impl Send for AsyncStdinListener<'_> {}
 
-impl AsyncStdinListener {
+impl StdinListener {
     fn new() -> Self {
         let (send, recv) = crossbeam_channel::unbounded::<String>();
 
@@ -107,7 +108,7 @@ impl AsyncStdinListener {
     }
 }
 
-impl Stream for AsyncStdinListener {
+impl Stream for StdinListener {
     type Item = String;
     fn poll_next(
         self: Pin<&mut Self>,
@@ -196,48 +197,12 @@ fn main() {
 
     let mut runtime = new_runtime(4, 36);
 
-    let mut stdin_listener = AsyncStdinListener::new();
-    runtime.spawn(async move {
-        for _ in 0..2 {
+    let mut stdin_listener = StdinListener::new();
+    runtime.block_on(async move {
+        loop {
             debug!("got line: {}", stdin_listener.next().await.unwrap());
         }
     });
-
-    runtime.spawn(async {
-        let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(1));
-        debug!("hello");
-        debug!("timer 2 elapsed from main: {:?}", timer().await);
-        debug!("timer 1 elapsed from main: {:?}", future1.await);
-    });
-
-    debug!("hello from main");
-
-    runtime.spawn(async {
-        let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(4));
-        debug!("timer 3 elapsed from main: {:?}", future1.await);
-    });
-
-    info!("hi");
-
-    runtime.spawn(async {
-        thread::sleep(Duration::from_secs(4));
-        info!("test multithreaded runtime done sleeping 1")
-    });
-
-    runtime.spawn(async {
-        thread::sleep(Duration::from_secs(4));
-        info!("test multithreaded runtime done sleeping 2")
-    });
-
-    runtime.block_on(async {
-        let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(10));
-        future1.await;
-    });
-
-    // Drop the sender so that the executor will stop when all tasks are done
-    // runtime.drop();
-
-    debug!("done");
 
     let mut buffer = String::new();
 
