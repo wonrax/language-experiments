@@ -6,6 +6,7 @@ use std::{
     sync::{mpsc, Arc, Mutex},
     task::{Poll, Waker},
     thread,
+    time::Duration,
 };
 
 use async_runtime::runtime::{current, new_runtime};
@@ -193,7 +194,7 @@ async fn timer() -> std::time::Duration {
 fn main() {
     pretty_env_logger::init_timed();
 
-    let mut runtime = new_runtime();
+    let mut runtime = new_runtime(4, 36);
 
     let mut stdin_listener = AsyncStdinListener::new();
     runtime.spawn(async move {
@@ -214,6 +215,18 @@ fn main() {
     runtime.spawn(async {
         let future1 = TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(4));
         debug!("timer 3 elapsed from main: {:?}", future1.await);
+    });
+
+    info!("hi");
+
+    runtime.spawn(async {
+        thread::sleep(Duration::from_secs(4));
+        info!("test multithreaded runtime done sleeping 1")
+    });
+
+    runtime.spawn(async {
+        thread::sleep(Duration::from_secs(4));
+        info!("test multithreaded runtime done sleeping 2")
     });
 
     runtime.block_on(async {
