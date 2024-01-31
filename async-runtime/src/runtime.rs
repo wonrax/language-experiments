@@ -1,13 +1,13 @@
+// TODO does task really need to be wrapped in Arc?
+//
 use futures::{
     task::{waker_ref, ArcWake},
     Future,
 };
-use log::{debug, info};
+use log::debug;
 use std::{
     any::Any,
-    borrow::BorrowMut,
-    cell::{Ref, RefCell},
-    os::unix::thread,
+    cell::RefCell,
     pin::Pin,
     sync::{Arc, Mutex},
 };
@@ -66,6 +66,13 @@ impl Handle {
     {
         self.thread_pool.spawn_blocking(task)
     }
+
+    pub fn block_on<R>(&self, future: impl Future<Output = R> + Send + 'static) -> R
+    where
+        R: Send + 'static,
+    {
+        self.spawn(future).join()
+    }
 }
 
 pub fn current() -> Handle {
@@ -83,63 +90,86 @@ pub fn set_current(handle: Handle) {
     });
 }
 
-pub fn new_runtime() -> Handle {
-    let executor = Executor::new();
-    let thread_pool = Arc::new(ThreadPool::new(4));
+pub fn new_runtime(num_worker: usize, max_blocking_threads: usize) -> Handle {
+    let thread_pool = Arc::new(ThreadPool::new(max_blocking_threads));
 
-    let handle = Handle::new(executor.sender.clone(), thread_pool.clone());
+    let (global_send, global_recv) = crossbeam_channel::unbounded::<Arc<Task>>();
+
+    let handle = Handle::new(global_send.clone(), thread_pool.clone());
 
     set_current(handle.clone());
 
-    thread_pool.spawn_blocking(move || executor.run());
+    for _ in 0..num_worker {
+        let executor = Worker::new(global_recv.clone());
+        thread_pool.spawn_blocking(move || executor.run());
+    }
 
     handle
 }
 
-/// A basic single threaded async executor. Blocking tasks are executed in a
-/// separate thread pool. This is the model Node.js uses. In the future, this
-/// will be evolved to be a multi-threaded executor, but for now we want to test
-/// for the correctness of the async implementation first.
-struct Executor<'a> {
-    queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
-    sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
+struct Worker<'a> {
+    local_queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
+    global_queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
+    // the task sender for this local queue
+    task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
 }
 
 // TODO implement lifetime correctly
-impl Executor<'static> {
-    fn new() -> Self {
+impl Worker<'static> {
+    fn new(global_queue: crossbeam_channel::Receiver<Arc<Task<'static>>>) -> Self {
         let (sender, queue) = crossbeam_channel::unbounded::<Arc<Task>>();
-        Self { queue, sender }
+        Self {
+            local_queue: queue,
+            global_queue,
+            task_sender: sender,
+        }
     }
 
     fn run(&self) {
-        while let Ok(task) = self.queue.recv() {
-            debug!("running task");
-            let mut future = task.future.lock().unwrap();
-            let waker = waker_ref(&task);
-            let context = &mut std::task::Context::from_waker(&waker);
+        // TODO since we're not using crossbeam channel's recv(), we don't get
+        // the benefit of yielding the thread when the channel is empty.
+        // Performance opportunities:
+        // - implement or use crossbeam's Backoff to yield the thread or spin
+        //   when the channel is empty
+        // - park the thread and use signal mechanism to wake up the thread when
+        //   there's a new task
+        loop {
+            let mut task: Option<Arc<Task<'static>>> = None;
 
-            match future.as_mut().poll(context) {
-                std::task::Poll::Pending => {
-                    debug!("task not ready");
-                }
-                std::task::Poll::Ready(result) => {
-                    debug!("task finished");
-                    if let Some(result_sender) = &task.result_sender {
-                        // ignore the error because there are cases
-                        // where the caller doesn't need the JoinHandle
-                        // thus it's dropped and the result channel is
-                        // closed
-                        let _ = result_sender.send(result);
+            // TODO currently we're not spawning into the local queue so this
+            // always returns err
+            if let Ok(t) = self.local_queue.try_recv() {
+                task = Some(t);
+            } else if let Ok(t) = self.global_queue.try_recv() {
+                // TODO consider changing the task_sender of the task to local
+                // queue sender, so that any futures that this task spawns
+                // get queued in the local queue.
+                task = Some(t);
+            }
+
+            if let Some(task) = task {
+                debug!("got task from local queue, running it");
+                let mut future = task.future.lock().unwrap();
+                let waker = waker_ref(&task);
+                let context = &mut std::task::Context::from_waker(&waker);
+
+                match future.as_mut().poll(context) {
+                    std::task::Poll::Pending => {
+                        debug!("task not ready");
+                    }
+                    std::task::Poll::Ready(result) => {
+                        debug!("task finished");
+                        if let Some(result_sender) = &task.result_sender {
+                            // ignore the error because there are cases
+                            // where the caller doesn't need the JoinHandle
+                            // thus it's dropped and the result channel is
+                            // closed
+                            let _ = result_sender.send(result);
+                        }
                     }
                 }
             }
         }
-        debug!("async executor stopped")
-    }
-
-    fn stop(&mut self) {
-        let _ = std::mem::replace(&mut self.sender, crossbeam_channel::unbounded().0);
     }
 }
 

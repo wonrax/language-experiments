@@ -1,4 +1,3 @@
-use futures::future::Join;
 use log::debug;
 use std::{
     marker::PhantomData,
