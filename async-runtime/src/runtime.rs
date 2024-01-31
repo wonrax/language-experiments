@@ -4,15 +4,12 @@ use futures::{
     task::{waker_ref, ArcWake},
     Future,
 };
-use log::{debug, info};
+use log::debug;
 use std::{
     any::Any,
-    borrow::BorrowMut,
-    cell::{Ref, RefCell},
-    os::unix::thread,
+    cell::RefCell,
     pin::Pin,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use crate::threadpool::{JoinHandle, ThreadPool};
