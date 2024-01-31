@@ -1,9 +1,10 @@
 use std::{
+    cell::OnceCell,
     collections::HashMap,
     io::{self, stdin, Write},
     pin::Pin,
     rc::Rc,
-    sync::{mpsc, Arc, Mutex},
+    sync::{mpsc, Arc, Mutex, OnceLock},
     task::{Poll, Waker},
     thread,
     time::Duration,
@@ -21,23 +22,32 @@ struct Message {
     body: Body,
 }
 
-#[derive(Clone)]
-struct Context {
-    send: mpsc::Sender<Request>,
-    node_id: Rc<String>,
-    node_ids: Rc<Vec<String>>,
-}
-
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 struct Body {
     #[serde(rename = "type")]
     typ: String,
-    msg_id: Option<i64>,
-    in_reply_to: Option<i64>,
+    msg_id: Option<u64>,
+    in_reply_to: Option<u64>,
 
     #[serde(flatten)]
     extra: Map<String, Value>,
 }
+
+#[derive(Clone)]
+struct Context {
+    node_id: Rc<String>,
+    node_ids: Rc<Vec<String>>,
+}
+
+#[derive(Debug)]
+struct Request {
+    typ: String,
+    src: Option<String>,
+    dest: Option<String>,
+    body: Option<Map<String, Value>>,
+}
+
+type Response = Request;
 
 impl From<anyhow::Error> for Message {
     fn from(value: anyhow::Error) -> Self {
@@ -52,13 +62,6 @@ impl From<anyhow::Error> for Message {
             },
         }
     }
-}
-
-struct Request {
-    msg: Message,
-
-    // Use this to send a response back to the client
-    send: mpsc::Sender<Message>,
 }
 
 // Listens to stdin and read lines in a loop.
@@ -79,32 +82,6 @@ impl StdinListener {
             recv,
             send,
         }
-
-        // let waker = this.waker.clone();
-
-        // TODO this thread won't stop running even if the future is dropped.
-        // thread_pool.spawn_blocking(move || loop {
-        //     let stdin = stdin();
-        //     let mut buffer = String::new();
-        //     stdin.read_line(&mut buffer).unwrap();
-
-        //     debug!("sending line: {}", buffer);
-        //     match send.try_send(buffer) {
-        //         Err(e) => match e {
-        //             crossbeam_channel::TrySendError::Full(_) => {
-        //                 debug!("channel full, dropping line");
-        //             }
-        //             crossbeam_channel::TrySendError::Disconnected(_) => {
-        //                 debug!("channel disconnected, exiting thread");
-        //                 break; // break and exit the thread
-        //             }
-        //         },
-        //         _ => {}
-        //     }
-        //     if let Some(waker) = waker.lock().unwrap().take() {
-        //         waker.wake();
-        //     }
-        // });
     }
 }
 
@@ -192,140 +169,91 @@ async fn timer() -> std::time::Duration {
     TimerThenReturnElapsedFuture::new(std::time::Duration::from_secs(3)).await
 }
 
-fn main() {
-    pretty_env_logger::init_timed();
+// RPC protocol
+#[derive(Debug)]
+struct RPC {
+    // A lock to ensure only one task is writing to stdout at a time
+    write_lock: Arc<Mutex<()>>,
 
-    let mut runtime = new_runtime(4, 36);
+    // global incrementing counter for message ids
+    msg_id: u64,
+}
 
-    let mut stdin_listener = StdinListener::new();
-    runtime.block_on(async move {
-        loop {
-            debug!("got line: {}", stdin_listener.next().await.unwrap());
+impl RPC {
+    fn new() -> Self {
+        Self {
+            write_lock: Arc::new(Mutex::new(())),
+            msg_id: 0,
         }
-    });
-
-    let mut buffer = String::new();
-
-    io::stdin().read_line(&mut buffer).unwrap();
-    let message: Message = serde_json::from_str(&buffer).unwrap();
-    if message.body.typ != "init" {
-        panic!("first message must be init");
     }
 
-    // use this as a RPC client, which is different than the main loop below
-    // which acts like a listen server
-    let (send_request, recv_request) = mpsc::channel::<Request>();
-
-    let mut request_senders: Arc<Mutex<HashMap<i64, mpsc::Sender<Message>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
-    let request_senders_clone = request_senders.clone();
-
-    thread::spawn(move || {
-        for request in recv_request {
-            let request_str = serde_json::to_string(&request.msg).unwrap() + "\n";
-            io::stdout().write_all(request_str.as_bytes()).unwrap();
-
-            let mut request_senders = request_senders_clone.lock().unwrap();
-            request_senders.insert(request.msg.body.msg_id.unwrap(), request.send);
-        }
-    });
-
-    let context = Context {
-        send: send_request,
-        node_id: Rc::new(
-            message
-                .body
-                .extra
-                .get("node_id")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .into(),
-        ),
-        node_ids: Rc::new(
-            message
-                .body
-                .extra
-                .get("node_ids")
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|v| v.as_str().unwrap().to_string())
-                .collect(),
-        ),
-    };
-
-    buffer.clear();
-
-    let request_senders_clone = request_senders.clone();
-    let response_buffer = String::new();
-
-    thread::spawn(|| {});
-
-    while let Ok(length) = io::stdin().read_line(&mut buffer) {
-        let message: Message = serde_json::from_str(&buffer).unwrap();
-
-        let response = match message.body.typ.as_str() {
-            "echo" => handle_echo(&message, context.clone()).map(|r| Some(r)),
-            _ => Ok(None),
-        };
-
-        let res = match response {
-            Ok(r) => r,
-            Err(e) => Some(Message::from(e)),
-        };
-
-        if let Some(res) = res {
-            let response_str = serde_json::to_string(&res).unwrap() + "\n";
-            io::stdout().write_all(response_str.as_bytes()).unwrap();
-        }
-
-        buffer.clear();
+    fn send(&mut self, mut message: Message) {
+        self.msg_id += 1;
+        message.body.msg_id = Some(self.msg_id);
+        let message_str = serde_json::to_string(&message).unwrap() + "\n";
+        let _lock = self.write_lock.lock().unwrap();
+        io::stdout().write_all(message_str.as_bytes()).unwrap();
     }
 }
 
-fn handle_echo(msg: &Message, context: Context) -> Result<Message, anyhow::Error> {
-    let echo = msg
-        .body
-        .extra
-        .get("echo")
-        .ok_or(anyhow::anyhow!(
-            "message is type echo but no echo field present"
-        ))?
-        .clone();
+static mut RPC_INSTANCE: OnceLock<RPC> = OnceLock::new();
 
-    let response = Message {
-        src: "n1".into(),
-        dest: "c1".into(),
-        body: Body {
-            typ: "echo_ok".into(),
-            msg_id: Some(1),
-            in_reply_to: msg.body.msg_id,
-            extra: Map::from_iter([("echo".to_string(), echo)]),
-        },
-    };
+fn main() {
+    pretty_env_logger::init_timed();
 
-    let (message_send, message_recv) = mpsc::channel::<Message>();
-
-    context.send.send(Request {
-        msg: Message {
-            src: "node".into(),
-            dest: "me".into(),
-            body: Body {
-                typ: "echo".into(),
-                msg_id: Some(69),
-                in_reply_to: None,
-                extra: Map::new(),
-            },
-        },
-        send: message_send,
-    });
-
-    for message in message_recv {
-        debug!("got message: {:?}", message);
+    unsafe {
+        RPC_INSTANCE.set(RPC::new()).unwrap();
     }
 
-    Ok(response)
+    let mut runtime = new_runtime(4, 36);
+
+    runtime.block_on(async {
+        let mut stdin_listener = StdinListener::new();
+
+        let init = stdin_listener.next().await.unwrap();
+        let message: Message = serde_json::from_str(&init).unwrap();
+        if message.body.typ != "init" {
+            panic!("first message must be init");
+        }
+        loop {
+            let message: Message =
+                serde_json::from_str(&stdin_listener.next().await.unwrap()).unwrap();
+
+            // TODO check if the dest is this node
+
+            current().spawn(async move {
+                let response = handler(Request {
+                    typ: message.body.typ,
+                    src: Some(message.src.clone()),
+                    dest: Some(message.dest.clone()),
+                    body: Some(message.body.extra),
+                })
+                .await;
+
+                unsafe {
+                    RPC_INSTANCE.get_mut().unwrap().send(Message {
+                        src: message.dest,
+                        dest: message.src,
+                        body: Body {
+                            typ: response.typ,
+                            msg_id: None, // TODO
+                            in_reply_to: message.body.msg_id,
+                            extra: response.body.unwrap(),
+                        },
+                    });
+                }
+            });
+        }
+    });
+}
+
+// handler receives message and returns a message as a response
+async fn handler(r: Request) -> Response {
+    debug!("got message: {:?}", r);
+    Response {
+        typ: "echo_ok".into(),
+        src: None,
+        dest: None,
+        body: r.body,
+    }
 }
