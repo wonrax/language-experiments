@@ -1,9 +1,14 @@
 use std::{
+    collections::HashMap,
     io::{self, Write},
     sync::{Arc, Mutex, OnceLock},
 };
 
+use async_runtime::runtime::current;
+use futures::{Future, StreamExt};
 use serde_json::{Map, Value};
+
+use crate::stdin::StdinListener;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub struct Message {
@@ -56,6 +61,9 @@ pub struct RPC {
 
     // global incrementing counter for message ids
     msg_id: u64,
+
+    // map of message ids to channels to send responses on
+    responses: HashMap<u64, crossbeam_channel::Sender<Response>>,
 }
 
 impl RPC {
@@ -63,15 +71,91 @@ impl RPC {
         Self {
             write_lock: Arc::new(Mutex::new(())),
             msg_id: 0,
+            responses: HashMap::new(),
         }
     }
 
+    // fire and forget
     pub fn send(&mut self, mut message: Message) {
         self.msg_id += 1;
         message.body.msg_id = Some(self.msg_id);
         let message_str = serde_json::to_string(&message).unwrap() + "\n";
         let _lock = self.write_lock.lock().unwrap();
         io::stdout().write_all(message_str.as_bytes()).unwrap();
+    }
+
+    // send and wait for response
+    // TODO support timeout
+    pub fn call(&mut self, mut message: Message) -> Result<Response, anyhow::Error> {
+        let (send, recv) = crossbeam_channel::bounded(1);
+
+        self.msg_id += 1;
+        message.body.msg_id = Some(self.msg_id);
+
+        self.responses.insert(message.body.msg_id.unwrap(), send);
+
+        let message_str = serde_json::to_string(&message).unwrap() + "\n";
+        let _lock = self.write_lock.lock().unwrap();
+        io::stdout().write_all(message_str.as_bytes()).unwrap();
+        drop(_lock);
+
+        Ok(recv.recv().unwrap())
+    }
+
+    // start accepting messages
+    pub async fn listen<F, R>(&mut self, handler: F)
+    where
+        F: Fn(Request) -> R + Send + Copy + 'static,
+        R: Future<Output = Response> + Send,
+    {
+        let mut stdin_listener = StdinListener::new();
+
+        loop {
+            let message: Message =
+                serde_json::from_str(&stdin_listener.next().await.unwrap()).unwrap();
+
+            // TODO find optimization opportunity here (e.g. spawn task)
+            if self
+                .responses
+                .contains_key(&message.body.in_reply_to.unwrap_or(0))
+            {
+                self.responses
+                    .remove(&message.body.in_reply_to.unwrap_or(0))
+                    .unwrap()
+                    .send(Response {
+                        typ: message.body.typ,
+                        src: Some(message.src),
+                        dest: Some(message.dest),
+                        body: Some(message.body.extra),
+                    })
+                    .unwrap();
+                continue;
+            }
+
+            current().spawn(async move {
+                // If the message is not a response, it must be a request
+                let response = handler(Request {
+                    typ: message.body.typ,
+                    src: Some(message.src.clone()),
+                    dest: Some(message.dest.clone()),
+                    body: Some(message.body.extra),
+                })
+                .await;
+
+                unsafe {
+                    RPC_INSTANCE.get_mut().unwrap().send(Message {
+                        src: message.dest,
+                        dest: message.src,
+                        body: Body {
+                            typ: response.typ,
+                            msg_id: None, // TODO
+                            in_reply_to: message.body.msg_id,
+                            extra: response.body.unwrap_or_default(),
+                        },
+                    });
+                }
+            });
+        }
     }
 }
 
