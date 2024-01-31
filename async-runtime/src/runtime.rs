@@ -129,10 +129,17 @@ impl Worker<'static> {
     }
 
     fn run(&self) {
+        // TODO since we're not using crossbeam channel's recv(), we don't get
+        // the benefit of yielding the thread when the channel is empty.
+        // Performance opportunities:
+        // - implement or use crossbeam's Backoff to yield the thread or spin
+        //   when the channel is empty
+        // - park the thread and use signal mechanism to wake up the thread when
+        //   there's a new task
         loop {
             let mut task: Option<Arc<Task<'static>>> = None;
 
-            // Currently we're not spawning into the local queue so this
+            // TODO currently we're not spawning into the local queue so this
             // always returns err
             if let Ok(t) = self.local_queue.try_recv() {
                 task = Some(t);
