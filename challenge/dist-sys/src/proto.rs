@@ -105,7 +105,7 @@ impl RPC {
     // start accepting messages
     pub async fn listen<F, R>(&mut self, handler: F)
     where
-        F: Fn(Request) -> R + Send + Copy + 'static,
+        F: FnMut(Request) -> R + Send + Clone + 'static,
         R: Future<Output = Response> + Send,
     {
         let mut stdin_listener = StdinListener::new();
@@ -132,9 +132,11 @@ impl RPC {
                 continue;
             }
 
+            let mut cloned_handler = handler.clone();
+
             current().spawn(async move {
                 // If the message is not a response, it must be a request
-                let response = handler(Request {
+                let response = cloned_handler(Request {
                     typ: message.body.typ,
                     src: Some(message.src.clone()),
                     dest: Some(message.dest.clone()),

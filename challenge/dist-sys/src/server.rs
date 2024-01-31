@@ -7,7 +7,7 @@ use crate::{
 
 pub async fn listen<F, R>(handler: F)
 where
-    F: Fn(Request) -> R + Send + Copy + 'static,
+    F: FnMut(Request) -> R + Send + Clone + 'static,
     R: Future<Output = Response> + Send,
 {
     let rpc = unsafe {

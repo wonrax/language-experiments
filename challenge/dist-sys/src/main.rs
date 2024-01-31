@@ -4,7 +4,11 @@ mod server;
 mod stdin;
 mod timer;
 
-use std::rc::Rc;
+use std::{
+    sync::{Arc, RwLock},
+    thread,
+    time::Duration,
+};
 
 use async_runtime::runtime::new_runtime;
 use client::request;
@@ -13,13 +17,56 @@ use proto::{Request, Response};
 use server::listen;
 
 #[derive(Clone)]
+struct App {
+    context: Arc<RwLock<Option<Context>>>,
+}
+
+#[derive(Debug)]
 struct Context {
-    node_id: Rc<String>,
-    node_ids: Rc<Vec<String>>,
+    node_id: String,
+    node_ids: Vec<String>,
+}
+
+impl App {
+    // handler receives message and returns a message as a response
+    async fn handler(self, r: Request) -> Response {
+        if r.typ == "init" {
+            let mut context = self.context.write().unwrap();
+            if context.is_some() {
+                panic!("context already initialized");
+            }
+            let node_id = r.src.unwrap();
+            let node_ids = r.body.unwrap()["node_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_string())
+                .collect();
+            *context = Some(Context { node_id, node_ids });
+            debug!("initialized context: {:?}", context);
+            return Response {
+                typ: "init_ok".into(),
+                src: None,
+                dest: None,
+                body: None,
+            };
+        }
+
+        Response {
+            typ: "echo_ok".into(),
+            src: None,
+            dest: None,
+            body: r.body,
+        }
+    }
 }
 
 fn main() {
     pretty_env_logger::init_timed();
+
+    let app = App {
+        context: Arc::new(RwLock::new(None)),
+    };
 
     let runtime = new_runtime(4, 36);
 
@@ -33,16 +80,8 @@ fn main() {
         println!("got response: {:?}", r);
     });
 
-    runtime.block_on(listen(handler));
-}
-
-// handler receives message and returns a message as a response
-async fn handler(r: Request) -> Response {
-    debug!("got message: {:?}", r);
-    Response {
-        typ: "echo_ok".into(),
-        src: None,
-        dest: None,
-        body: r.body,
-    }
+    runtime.block_on(listen(move |x| {
+        let app = app.clone();
+        app.handler(x)
+    }));
 }
