@@ -4,16 +4,13 @@ mod server;
 mod stdin;
 mod timer;
 
-use std::{
-    sync::{Arc, RwLock},
-    thread,
-    time::Duration,
-};
+use std::sync::{Arc, RwLock};
 
-use async_runtime::runtime::new_runtime;
+use async_runtime::runtime;
 use client::request;
 use log::debug;
 use proto::{Request, Response};
+use serde_json::{json, Map};
 use server::listen;
 
 #[derive(Clone)]
@@ -29,35 +26,68 @@ struct Context {
 
 impl App {
     // handler receives message and returns a message as a response
-    async fn handler(self, r: Request) -> Response {
-        if r.typ == "init" {
-            let mut context = self.context.write().unwrap();
-            if context.is_some() {
-                panic!("context already initialized");
+    async fn main_handler(mut self, r: Request) -> Response {
+        {
+            let ctx = self.context.read().unwrap();
+            if let Some(ctx) = ctx.as_ref() {
+                if &ctx.node_id != r.dest.as_ref().unwrap() {
+                    let mut response = Response::new("err").with_body(
+                        json!({
+                            "msg": "invalid dest"
+                        })
+                        .as_object()
+                        .unwrap()
+                        .to_owned(),
+                    );
+
+                    response.src = Some(ctx.node_id.clone());
+                    response.dest = r.src;
+
+                    return response;
+                }
             }
-            let node_id = r.src.unwrap();
-            let node_ids = r.body.unwrap()["node_ids"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|x| x.as_str().unwrap().to_string())
-                .collect();
-            *context = Some(Context { node_id, node_ids });
-            debug!("initialized context: {:?}", context);
-            return Response {
-                typ: "init_ok".into(),
-                src: None,
-                dest: None,
-                body: None,
-            };
         }
 
-        Response {
-            typ: "echo_ok".into(),
-            src: None,
-            dest: None,
-            body: r.body,
-        }
+        let mut response = match r.typ.as_str() {
+            "init" => {
+                let mut context = self.context.write().unwrap();
+                if context.is_some() {
+                    panic!("context already initialized");
+                }
+                let node_id = r.body.as_ref().unwrap()["node_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_string();
+                let node_ids: Vec<String> = r.body.as_ref().unwrap()["node_ids"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x.as_str().unwrap().to_string())
+                    .collect();
+                *context = Some(Context { node_id, node_ids });
+                debug!("initialized context: {:?}", context);
+                Response::new("init_ok").with_body(r.body.clone().unwrap())
+            }
+            "echo" => self.echo_handler(&r).await,
+            _ => panic!("unknown message type: {}", r.typ),
+        };
+
+        response.src = Some(
+            self.context
+                .read()
+                .unwrap()
+                .as_ref()
+                .expect("context not initialized, an init message should be sent first")
+                .node_id
+                .clone(),
+        );
+        response.dest = Some(r.src.clone().unwrap());
+
+        response
+    }
+
+    async fn echo_handler(&mut self, r: &Request) -> Response {
+        Response::new("echo_ok").with_body(r.body.clone().unwrap())
     }
 }
 
@@ -68,20 +98,20 @@ fn main() {
         context: Arc::new(RwLock::new(None)),
     };
 
-    let runtime = new_runtime(4, 36);
+    let runtime = runtime::new_runtime(4, 36);
 
-    runtime.spawn(async {
-        let r = request(Request {
-            src: None,
-            dest: Some("node1".into()),
-            typ: "hello".into(),
-            body: None,
-        });
-        println!("got response: {:?}", r);
-    });
+    // runtime.spawn(async {
+    //     let r = request(Request {
+    //         src: None,
+    //         dest: Some("node1".into()),
+    //         typ: "hello".into(),
+    //         body: None,
+    //     });
+    //     println!("got response: {:?}", r);
+    // });
 
     runtime.block_on(listen(move |x| {
         let app = app.clone();
-        app.handler(x)
+        app.main_handler(x)
     }));
 }

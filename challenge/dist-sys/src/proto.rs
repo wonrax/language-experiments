@@ -21,7 +21,11 @@ pub struct Message {
 pub struct Body {
     #[serde(rename = "type")]
     pub typ: String,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub msg_id: Option<u64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<u64>,
 
     #[serde(flatten)]
@@ -38,18 +42,19 @@ pub struct Request {
 
 pub type Response = Request;
 
-impl From<anyhow::Error> for Message {
-    fn from(value: anyhow::Error) -> Self {
-        Message {
-            src: "TODO".into(),
-            dest: "TODO".into(),
-            body: Body {
-                typ: "error".into(),
-                msg_id: None,
-                in_reply_to: None,
-                extra: Map::from_iter([("error".to_string(), Value::String(value.to_string()))]),
-            },
+impl Response {
+    pub fn new(typ: &str) -> Self {
+        Self {
+            typ: typ.into(),
+            src: None,
+            dest: None,
+            body: None,
         }
+    }
+
+    pub fn with_body(mut self, body: Map<String, Value>) -> Self {
+        self.body = Some(body);
+        self
     }
 }
 
@@ -146,8 +151,8 @@ impl RPC {
 
                 unsafe {
                     RPC_INSTANCE.get_mut().unwrap().send(Message {
-                        src: message.dest,
-                        dest: message.src,
+                        src: response.src.expect("response must have a source"),
+                        dest: response.dest.expect("response must have a destination"),
                         body: Body {
                             typ: response.typ,
                             msg_id: None, // TODO
