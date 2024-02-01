@@ -5,17 +5,21 @@ mod server;
 mod stdin;
 mod timer;
 
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use async_runtime::runtime;
 use proto::{Request, Response};
 use serde_json::json;
 
-#[derive(Clone)]
-struct App {
-    context: Arc<RwLock<Option<Context>>>,
-    unique_id_sequence: Arc<RwLock<(u128, u32)>>,
+struct app {
+    context: RwLock<Option<Context>>,
+    unique_id_sequence: RwLock<(u128, u32)>,
 }
+
+type App = Arc<app>;
 
 #[derive(Debug)]
 struct Context {
@@ -72,10 +76,10 @@ async fn main_handler(mut app: App, r: Request) -> Response {
 fn main() {
     pretty_env_logger::init_timed();
 
-    let app = App {
-        context: Arc::new(RwLock::new(None)),
-        unique_id_sequence: Arc::new(RwLock::new((0, 0))),
-    };
+    let app = Arc::new(app {
+        context: RwLock::new(None),
+        unique_id_sequence: RwLock::new((0, 0)),
+    });
 
     let runtime = runtime::new_runtime(4, 36);
 
