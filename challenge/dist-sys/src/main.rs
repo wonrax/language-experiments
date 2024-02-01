@@ -17,6 +17,8 @@ use serde_json::json;
 struct app {
     context: RwLock<Option<Context>>,
     unique_id_sequence: RwLock<(u128, u32)>,
+    broadcast_data: RwLock<Vec<i64>>,
+    topology: RwLock<HashMap<String, Vec<String>>>,
 }
 
 type App = Arc<app>;
@@ -56,6 +58,7 @@ async fn main_handler(mut app: App, r: Request) -> Response {
         "init" => handlers::init::handle(&mut app, &r).await,
         "echo" => handlers::echo::handle(&mut app, &r).await,
         "generate" => handlers::unique_id::handle(&mut app, &r).await,
+        "broadcast" | "read" | "topology" => handlers::broadcast::handle(&mut app, &r).await,
         _ => panic!("unknown message type: {}", r.typ),
     };
 
@@ -79,6 +82,8 @@ fn main() {
     let app = Arc::new(app {
         context: RwLock::new(None),
         unique_id_sequence: RwLock::new((0, 0)),
+        broadcast_data: RwLock::new(Vec::new()),
+        topology: RwLock::new(HashMap::new()),
     });
 
     let runtime = runtime::new_runtime(4, 36);
