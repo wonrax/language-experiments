@@ -14,6 +14,7 @@ use serde_json::json;
 #[derive(Clone)]
 struct App {
     context: Arc<RwLock<Option<Context>>>,
+    unique_id_sequence: Arc<RwLock<(u128, u32)>>,
 }
 
 #[derive(Debug)]
@@ -46,9 +47,11 @@ async fn main_handler(mut app: App, r: Request) -> Response {
         }
     }
 
+    // TODO handle unknown message types by returning error message
     let mut response = match r.typ.as_str() {
         "init" => handlers::init::handle(&mut app, &r).await,
         "echo" => handlers::echo::handle(&mut app, &r).await,
+        "generate" => handlers::unique_id::handle(&mut app, &r).await,
         _ => panic!("unknown message type: {}", r.typ),
     };
 
@@ -71,6 +74,7 @@ fn main() {
 
     let app = App {
         context: Arc::new(RwLock::new(None)),
+        unique_id_sequence: Arc::new(RwLock::new((0, 0))),
     };
 
     let runtime = runtime::new_runtime(4, 36);
