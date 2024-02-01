@@ -1,22 +1,27 @@
 mod client;
+mod handlers;
 mod proto;
 mod server;
 mod stdin;
 mod timer;
 
-use std::sync::{Arc, RwLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use async_runtime::runtime;
-use client::request;
-use log::debug;
 use proto::{Request, Response};
-use serde_json::{json, Map};
-use server::listen;
+use serde_json::json;
 
-#[derive(Clone)]
-struct App {
-    context: Arc<RwLock<Option<Context>>>,
+struct app {
+    context: RwLock<Option<Context>>,
+    unique_id_sequence: RwLock<(u128, u32)>,
+    broadcast_data: RwLock<Vec<i64>>,
+    topology: RwLock<HashMap<String, Vec<String>>>,
 }
+
+type App = Arc<app>;
 
 #[derive(Debug)]
 struct Context {
@@ -24,94 +29,64 @@ struct Context {
     node_ids: Vec<String>,
 }
 
-impl App {
-    // handler receives message and returns a message as a response
-    async fn main_handler(mut self, r: Request) -> Response {
-        {
-            let ctx = self.context.read().unwrap();
-            if let Some(ctx) = ctx.as_ref() {
-                if &ctx.node_id != r.dest.as_ref().unwrap() {
-                    let mut response = Response::new("err").with_body(
-                        json!({
-                            "msg": "invalid dest"
-                        })
-                        .as_object()
-                        .unwrap()
-                        .to_owned(),
-                    );
+// root handler aka router that dispatches messages to the appropriate handler
+async fn main_handler(mut app: App, r: Request) -> Response {
+    // check if the dest is this node
+    {
+        let ctx = app.context.read().unwrap();
+        if let Some(ctx) = ctx.as_ref() {
+            if &ctx.node_id != r.dest.as_ref().unwrap() {
+                let mut response = Response::new("err").with_body(
+                    json!({
+                        "msg": "invalid dest"
+                    })
+                    .as_object()
+                    .unwrap()
+                    .to_owned(),
+                );
 
-                    response.src = Some(ctx.node_id.clone());
-                    response.dest = r.src;
+                response.src = Some(ctx.node_id.clone());
+                response.dest = r.src;
 
-                    return response;
-                }
+                return response;
             }
         }
-
-        let mut response = match r.typ.as_str() {
-            "init" => {
-                let mut context = self.context.write().unwrap();
-                if context.is_some() {
-                    panic!("context already initialized");
-                }
-                let node_id = r.body.as_ref().unwrap()["node_id"]
-                    .as_str()
-                    .unwrap()
-                    .to_string();
-                let node_ids: Vec<String> = r.body.as_ref().unwrap()["node_ids"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|x| x.as_str().unwrap().to_string())
-                    .collect();
-                *context = Some(Context { node_id, node_ids });
-                debug!("initialized context: {:?}", context);
-                Response::new("init_ok").with_body(r.body.clone().unwrap())
-            }
-            "echo" => self.echo_handler(&r).await,
-            _ => panic!("unknown message type: {}", r.typ),
-        };
-
-        response.src = Some(
-            self.context
-                .read()
-                .unwrap()
-                .as_ref()
-                .expect("context not initialized, an init message should be sent first")
-                .node_id
-                .clone(),
-        );
-        response.dest = Some(r.src.clone().unwrap());
-
-        response
     }
 
-    async fn echo_handler(&mut self, r: &Request) -> Response {
-        Response::new("echo_ok").with_body(r.body.clone().unwrap())
-    }
+    // TODO handle unknown message types by returning error message
+    let mut response = match r.typ.as_str() {
+        "init" => handlers::init::handle(&mut app, &r).await,
+        "echo" => handlers::echo::handle(&mut app, &r).await,
+        "generate" => handlers::unique_id::handle(&mut app, &r).await,
+        "broadcast" | "read" | "topology" => handlers::broadcast::handle(&mut app, &r).await,
+        _ => panic!("unknown message type: {}", r.typ),
+    };
+
+    response.src = Some(
+        app.context
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("context not initialized, an init message should be sent first")
+            .node_id
+            .clone(),
+    );
+    response.dest = Some(r.src.clone().unwrap());
+
+    response
 }
 
 fn main() {
     pretty_env_logger::init_timed();
 
-    let app = App {
-        context: Arc::new(RwLock::new(None)),
-    };
+    let app = Arc::new(app {
+        context: RwLock::new(None),
+        unique_id_sequence: RwLock::new((0, 0)),
+        broadcast_data: RwLock::new(Vec::new()),
+        topology: RwLock::new(HashMap::new()),
+    });
 
     let runtime = runtime::new_runtime(4, 36);
 
-    // runtime.spawn(async {
-    //     let r = request(Request {
-    //         src: None,
-    //         dest: Some("node1".into()),
-    //         typ: "hello".into(),
-    //         body: None,
-    //     });
-    //     println!("got response: {:?}", r);
-    // });
-
-    runtime.block_on(listen(move |x| {
-        let app = app.clone();
-        app.main_handler(x)
-    }));
+    runtime.block_on(server::listen(move |x| main_handler(app.clone(), x)));
 }
