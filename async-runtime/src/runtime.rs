@@ -91,7 +91,7 @@ pub fn set_current(handle: Handle) {
 }
 
 pub fn new_runtime(num_worker: usize, max_blocking_threads: usize) -> Handle {
-    let thread_pool = Arc::new(ThreadPool::new(max_blocking_threads));
+    let thread_pool = Arc::new(ThreadPool::new(max_blocking_threads + num_worker));
 
     let (global_send, global_recv) = crossbeam_channel::unbounded::<Arc<Task>>();
 
