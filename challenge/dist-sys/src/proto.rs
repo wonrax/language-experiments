@@ -120,27 +120,33 @@ impl Protocol {
         R: Future<Output = Response> + Send,
     {
         let mut stdin_listener = StdinListener::new();
+        let mut this_node_id: Option<String> = None;
 
         loop {
             let message: Message =
                 serde_json::from_str(&stdin_listener.next().await.unwrap()).unwrap();
 
-            // TODO find optimization opportunity here (e.g. spawn task)
-            if self
-                .responses
-                .contains_key(&message.body.in_reply_to.unwrap_or(0))
-            {
-                self.responses
-                    .remove(&message.body.in_reply_to.unwrap_or(0))
-                    .unwrap()
-                    .set_response(Response {
-                        typ: message.body.typ,
-                        src: Some(message.src),
-                        dest: Some(message.dest),
-                        body: Some(message.body.extra),
-                    });
+            if this_node_id.is_none() && message.body.typ == "init" {
+                this_node_id = Some(message.body.extra["node_id"].as_str().unwrap().to_string());
+            }
 
-                continue;
+            // TODO find optimization opportunity here (e.g. spawn task)
+            if let Some(ref in_reply_to) = message.body.in_reply_to {
+                if let Some(ref this_node_id) = this_node_id {
+                    if this_node_id == &message.dest && self.responses.contains_key(in_reply_to) {
+                        self.responses
+                            .remove(in_reply_to)
+                            .unwrap()
+                            .set_response(Response {
+                                typ: message.body.typ,
+                                src: Some(message.src),
+                                dest: Some(message.dest),
+                                body: Some(message.body.extra),
+                            });
+
+                        continue;
+                    }
+                }
             }
 
             let mut cloned_handler = handler.clone();

@@ -53,7 +53,7 @@ impl Future for RequestFuture {
 // TODO return error instead
 pub async fn request(r: Request) -> Response {
     let message = Message {
-        src: "TODO".into(),
+        src: r.src.unwrap(),
         dest: r.dest.unwrap(),
         body: Body {
             typ: r.typ,
