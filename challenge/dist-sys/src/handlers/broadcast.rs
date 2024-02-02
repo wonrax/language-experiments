@@ -25,7 +25,15 @@ pub async fn handle(app: &mut App, r: &Request) -> Response {
             )
         }
         "topology" => {
-            // TODO
+            let mut lock = app.topology.write().unwrap();
+            let topo = r.body.as_ref().unwrap()["topology"].as_object().unwrap();
+            for (k, v) in topo {
+                let mut nodes = Vec::new();
+                for node in v.as_array().unwrap() {
+                    nodes.push(node.as_str().unwrap().to_string());
+                }
+                lock.insert(k.to_string(), nodes);
+            }
             Response::new("topology_ok")
         }
         _ => unreachable!(),

@@ -25,5 +25,5 @@ pub async fn handle(app: &mut App, r: &Request) -> Response {
     *context = Some(Context { node_id, node_ids });
     debug!("initialized context: {:?}", context);
 
-    Response::new("init_ok").with_body(r.body.clone().unwrap())
+    Response::new("init_ok")
 }

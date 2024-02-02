@@ -8,7 +8,7 @@ use async_runtime::runtime::current;
 use futures::{Future, StreamExt};
 use serde_json::{Map, Value};
 
-use crate::stdin::StdinListener;
+use crate::{client::RequestFuture, stdin::StdinListener};
 
 #[derive(serde::Deserialize, serde::Serialize, Debug)]
 pub struct Message {
@@ -32,7 +32,7 @@ pub struct Body {
     pub extra: Map<String, Value>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Request {
     pub typ: String,
     pub src: Option<String>,
@@ -60,7 +60,7 @@ impl Response {
 
 // RPC protocol
 #[derive(Debug)]
-pub struct RPC {
+pub struct Protocol {
     // A lock to ensure only one task is writing to stdout at a time
     write_lock: Arc<Mutex<()>>,
 
@@ -68,10 +68,10 @@ pub struct RPC {
     msg_id: u64,
 
     // map of message ids to channels to send responses on
-    responses: HashMap<u64, crossbeam_channel::Sender<Response>>,
+    responses: HashMap<u64, RequestFuture>,
 }
 
-impl RPC {
+impl Protocol {
     pub fn new() -> Self {
         Self {
             write_lock: Arc::new(Mutex::new(())),
@@ -81,6 +81,7 @@ impl RPC {
     }
 
     // fire and forget
+    // TODO spawn a task so that the write is queued instead of blocking
     pub fn send(&mut self, mut message: Message) {
         self.msg_id += 1;
         message.body.msg_id = Some(self.msg_id);
@@ -91,20 +92,25 @@ impl RPC {
 
     // send and wait for response
     // TODO support timeout
-    pub fn call(&mut self, mut message: Message) -> Result<Response, anyhow::Error> {
-        let (send, recv) = crossbeam_channel::bounded(1);
+    pub async fn call(
+        &mut self,
+        mut message: Message,
+        fut: RequestFuture,
+    ) -> Result<Response, anyhow::Error> {
+        // let (send, recv) = crossbeam_channel::bounded(1);
 
         self.msg_id += 1;
         message.body.msg_id = Some(self.msg_id);
 
-        self.responses.insert(message.body.msg_id.unwrap(), send);
+        self.responses
+            .insert(message.body.msg_id.unwrap(), fut.clone());
 
         let message_str = serde_json::to_string(&message).unwrap() + "\n";
         let _lock = self.write_lock.lock().unwrap();
         io::stdout().write_all(message_str.as_bytes()).unwrap();
         drop(_lock);
 
-        Ok(recv.recv().unwrap())
+        Ok(fut.await)
     }
 
     // start accepting messages
@@ -127,20 +133,20 @@ impl RPC {
                 self.responses
                     .remove(&message.body.in_reply_to.unwrap_or(0))
                     .unwrap()
-                    .send(Response {
+                    .set_response(Response {
                         typ: message.body.typ,
                         src: Some(message.src),
                         dest: Some(message.dest),
                         body: Some(message.body.extra),
-                    })
-                    .unwrap();
+                    });
+
                 continue;
             }
 
             let mut cloned_handler = handler.clone();
 
+            // If the message is not a response, it must be a request
             current().spawn(async move {
-                // If the message is not a response, it must be a request
                 let response = cloned_handler(Request {
                     typ: message.body.typ,
                     src: Some(message.src.clone()),
@@ -150,7 +156,7 @@ impl RPC {
                 .await;
 
                 unsafe {
-                    RPC_INSTANCE.get_mut().unwrap().send(Message {
+                    PROTOCOL.get_mut().unwrap().send(Message {
                         src: response.src.expect("response must have a source"),
                         dest: response.dest.expect("response must have a destination"),
                         body: Body {
@@ -166,4 +172,4 @@ impl RPC {
     }
 }
 
-pub static mut RPC_INSTANCE: OnceLock<RPC> = OnceLock::new();
+pub static mut PROTOCOL: OnceLock<Protocol> = OnceLock::new();
