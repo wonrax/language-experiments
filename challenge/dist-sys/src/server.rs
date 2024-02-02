@@ -2,7 +2,7 @@ use futures::{join, Future};
 
 use crate::{
     client::request,
-    proto::{RPC, RPC_INSTANCE},
+    proto::{Protocol, PROTOCOL},
     Request, Response,
 };
 
@@ -12,8 +12,8 @@ where
     R: Future<Output = Response> + Send,
 {
     let rpc = unsafe {
-        let _ = RPC_INSTANCE.set(RPC::new());
-        RPC_INSTANCE.get_mut().unwrap()
+        let _ = PROTOCOL.set(Protocol::new());
+        PROTOCOL.get_mut().unwrap()
     };
 
     rpc.listen(handler).await;

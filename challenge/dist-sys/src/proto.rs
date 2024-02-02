@@ -60,7 +60,7 @@ impl Response {
 
 // RPC protocol
 #[derive(Debug)]
-pub struct RPC {
+pub struct Protocol {
     // A lock to ensure only one task is writing to stdout at a time
     write_lock: Arc<Mutex<()>>,
 
@@ -71,7 +71,7 @@ pub struct RPC {
     responses: HashMap<u64, RequestFuture>,
 }
 
-impl RPC {
+impl Protocol {
     pub fn new() -> Self {
         Self {
             write_lock: Arc::new(Mutex::new(())),
@@ -81,6 +81,7 @@ impl RPC {
     }
 
     // fire and forget
+    // TODO spawn a task so that the write is queued instead of blocking
     pub fn send(&mut self, mut message: Message) {
         self.msg_id += 1;
         message.body.msg_id = Some(self.msg_id);
@@ -155,7 +156,7 @@ impl RPC {
                 .await;
 
                 unsafe {
-                    RPC_INSTANCE.get_mut().unwrap().send(Message {
+                    PROTOCOL.get_mut().unwrap().send(Message {
                         src: response.src.expect("response must have a source"),
                         dest: response.dest.expect("response must have a destination"),
                         body: Body {
@@ -171,4 +172,4 @@ impl RPC {
     }
 }
 
-pub static mut RPC_INSTANCE: OnceLock<RPC> = OnceLock::new();
+pub static mut PROTOCOL: OnceLock<Protocol> = OnceLock::new();

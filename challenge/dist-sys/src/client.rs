@@ -5,7 +5,7 @@ use std::{
 
 use futures::Future;
 
-use crate::proto::{Body, Message, Request, Response, RPC, RPC_INSTANCE};
+use crate::proto::{Body, Message, Protocol, Request, Response, PROTOCOL};
 
 #[derive(Debug)]
 struct Inner {
@@ -67,9 +67,9 @@ pub async fn request(r: Request) -> Response {
 
     unsafe {
         // TODO not efficient
-        let _ = RPC_INSTANCE.set(RPC::new());
+        let _ = PROTOCOL.set(Protocol::new());
 
-        RPC_INSTANCE
+        PROTOCOL
             .get_mut()
             .expect("RPC instance not initialized")
             .call(message, future)
