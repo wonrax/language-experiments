@@ -14,14 +14,14 @@ use async_runtime::runtime;
 use proto::{Request, Response};
 use serde_json::json;
 
-struct app {
+struct Inner {
     context: RwLock<Option<Context>>,
     unique_id_sequence: RwLock<(u128, u32)>,
     broadcast_data: RwLock<Vec<i64>>,
     topology: RwLock<HashMap<String, Vec<String>>>,
 }
 
-type App = Arc<app>;
+type App = Arc<Inner>;
 
 #[derive(Debug)]
 struct Context {
@@ -79,7 +79,7 @@ async fn main_handler(mut app: App, r: Request) -> Response {
 fn main() {
     pretty_env_logger::init_timed();
 
-    let app = Arc::new(app {
+    let app = Arc::new(Inner {
         context: RwLock::new(None),
         unique_id_sequence: RwLock::new((0, 0)),
         broadcast_data: RwLock::new(Vec::new()),
