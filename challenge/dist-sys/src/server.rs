@@ -1,6 +1,7 @@
-use futures::Future;
+use futures::{join, Future};
 
 use crate::{
+    client::request,
     proto::{RPC, RPC_INSTANCE},
     Request, Response,
 };
