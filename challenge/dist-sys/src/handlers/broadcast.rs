@@ -10,7 +10,7 @@ pub async fn handle(app: &mut App, r: &Request) -> Response {
         "broadcast" => {
             let number = r.body.as_ref().unwrap()["message"].as_i64().unwrap();
             let mut lock = app.broadcast_data.write().unwrap();
-            lock.push(number);
+            lock.insert(number);
             Response::new("broadcast_ok")
         }
         "read" => {
