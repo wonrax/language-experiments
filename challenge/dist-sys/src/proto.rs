@@ -1,11 +1,13 @@
 use std::{
+    borrow::BorrowMut,
+    cell::RefCell,
     collections::HashMap,
     io::{self, Write},
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock, RwLock},
 };
 
 use async_runtime::runtime::current;
-use futures::{Future, StreamExt};
+use futures::{future::join, lock::Mutex, Future, SinkExt, StreamExt};
 use serde_json::{Map, Value};
 
 use crate::{client::RequestFuture, stdin::StdinListener};
@@ -61,60 +63,67 @@ impl Response {
 // RPC protocol
 #[derive(Debug)]
 pub struct Protocol {
-    // A lock to ensure only one task is writing to stdout at a time
-    write_lock: Arc<Mutex<()>>,
+    shared: Mutex<Shared>,
+}
 
+struct Shared {
     // global incrementing counter for message ids
     msg_id: u64,
 
-    // map of message ids to channels to send responses on
+    // a queue of message ids and its response future to wake up
     responses: HashMap<u64, RequestFuture>,
 }
 
 impl Protocol {
     pub fn new() -> Self {
         Self {
-            write_lock: Arc::new(Mutex::new(())),
-            msg_id: 0,
-            responses: HashMap::new(),
+            shared: Mutex::new(Shared {
+                msg_id: 0,
+                responses: HashMap::new(),
+            }),
         }
+    }
+
+    fn write_message(&self, message: Message) {
+        let message_str = serde_json::to_string(&message).unwrap() + "\n";
+        io::stdout().write_all(message_str.as_bytes()).unwrap();
     }
 
     // fire and forget
     // TODO spawn a task so that the write is queued instead of blocking
-    pub fn send(&mut self, mut message: Message) {
-        self.msg_id += 1;
-        message.body.msg_id = Some(self.msg_id);
-        let message_str = serde_json::to_string(&message).unwrap() + "\n";
-        let _lock = self.write_lock.lock().unwrap();
-        io::stdout().write_all(message_str.as_bytes()).unwrap();
+    pub async fn send(&self, mut message: Message) {
+        let mut lock = self.shared.lock().await;
+
+        lock.msg_id += 1;
+        message.body.msg_id = Some(lock.msg_id);
+
+        drop(lock);
+
+        self.write_message(message);
     }
 
     // send and wait for response
     // TODO support timeout
-    pub async fn call(
-        &mut self,
-        mut message: Message,
-        fut: RequestFuture,
-    ) -> Result<Response, anyhow::Error> {
-        // let (send, recv) = crossbeam_channel::bounded(1);
+    pub async fn call(&self, mut message: Message) -> Response {
+        let fut = RequestFuture::new();
 
-        self.msg_id += 1;
-        message.body.msg_id = Some(self.msg_id);
+        let mut lock = self.shared.lock().await;
 
-        self.responses
+        lock.msg_id += 1;
+        message.body.msg_id = Some(lock.msg_id);
+
+        lock.responses
             .insert(message.body.msg_id.unwrap(), fut.clone());
 
-        let message_str = serde_json::to_string(&message).unwrap() + "\n";
-        let _lock = self.write_lock.lock().unwrap();
-        io::stdout().write_all(message_str.as_bytes()).unwrap();
-        drop(_lock);
+        drop(lock);
 
-        Ok(fut.await)
+        self.write_message(message);
+
+        fut.await
     }
 
     // start accepting messages
-    pub async fn listen<F, R>(&mut self, handler: F)
+    pub async fn listen<F, R>(&self, handler: F)
     where
         F: FnMut(Request) -> R + Send + Clone + 'static,
         R: Future<Output = Response> + Send,
@@ -133,8 +142,10 @@ impl Protocol {
             // TODO find optimization opportunity here (e.g. spawn task)
             if let Some(ref in_reply_to) = message.body.in_reply_to {
                 if let Some(ref this_node_id) = this_node_id {
-                    if this_node_id == &message.dest && self.responses.contains_key(in_reply_to) {
-                        self.responses
+                    let mut lock = self.shared.lock().await;
+
+                    if this_node_id == &message.dest && lock.responses.contains_key(in_reply_to) {
+                        lock.responses
                             .remove(in_reply_to)
                             .unwrap()
                             .set_response(Response {
@@ -161,8 +172,16 @@ impl Protocol {
                 })
                 .await;
 
-                unsafe {
-                    PROTOCOL.get_mut().unwrap().send(Message {
+                PROTOCOL
+                    .get()
+                    .expect(
+                        "Protocol should've been initialized by now. \
+                            Either the protocol is not initialized or \
+                            you're trying to use the protocol from a \
+                            different thread.",
+                    )
+                    // .unwrap()
+                    .send(Message {
                         src: response.src.expect("response must have a source"),
                         dest: response.dest.expect("response must have a destination"),
                         body: Body {
@@ -171,11 +190,11 @@ impl Protocol {
                             in_reply_to: message.body.msg_id,
                             extra: response.body.unwrap_or_default(),
                         },
-                    });
-                }
+                    })
+                    .await;
             });
         }
     }
 }
 
-pub static mut PROTOCOL: OnceLock<Protocol> = OnceLock::new();
+pub static PROTOCOL: OnceLock<Protocol> = OnceLock::new();

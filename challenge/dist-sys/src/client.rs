@@ -17,7 +17,7 @@ struct Inner {
 pub struct RequestFuture(Arc<Mutex<Inner>>);
 
 impl RequestFuture {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self(Arc::new(Mutex::new(Inner {
             response: None,
             waker: None,
@@ -63,17 +63,14 @@ pub async fn request(r: Request) -> Response {
         },
     };
 
-    let future = RequestFuture::new();
-
-    unsafe {
-        // TODO not efficient
-        let _ = PROTOCOL.set(Protocol::new());
-
-        PROTOCOL
-            .get_mut()
-            .expect("RPC instance not initialized")
-            .call(message, future)
-            .await
-            .unwrap()
-    }
+    PROTOCOL
+        .get()
+        .expect(
+            "Protocol should've been initialized by now. \
+                Either the protocol is not initialized or \
+                you're trying to use the protocol from a \
+                different thread.",
+        )
+        .call(message)
+        .await
 }
