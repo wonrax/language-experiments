@@ -6,7 +6,7 @@ mod stdin;
 mod timer;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, RwLock},
 };
 
@@ -17,7 +17,7 @@ use serde_json::json;
 struct Inner {
     context: RwLock<Option<Context>>,
     unique_id_sequence: RwLock<(u128, u32)>,
-    broadcast_data: RwLock<Vec<i64>>,
+    broadcast_data: RwLock<HashSet<i64>>,
     topology: RwLock<HashMap<String, Vec<String>>>,
 }
 
@@ -59,7 +59,7 @@ async fn main_handler(mut app: App, r: Request) -> Response {
         "echo" => handlers::echo::handle(&mut app, &r).await,
         "generate" => handlers::unique_id::handle(&mut app, &r).await,
         "broadcast" | "read" | "topology" => handlers::broadcast::handle(&mut app, &r).await,
-        _ => panic!("unknown message type: {}", r.typ),
+        _ => panic!("unknown message type: request: {:?}", r),
     };
 
     response.src = Some(
@@ -82,7 +82,7 @@ fn main() {
     let app = Arc::new(Inner {
         context: RwLock::new(None),
         unique_id_sequence: RwLock::new((0, 0)),
-        broadcast_data: RwLock::new(Vec::new()),
+        broadcast_data: RwLock::new(HashSet::new()),
         topology: RwLock::new(HashMap::new()),
     });
 

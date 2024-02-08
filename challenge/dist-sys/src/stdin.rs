@@ -46,6 +46,12 @@ impl Stream for StdinListener {
             let send = self.send.clone();
 
             // start the operation in a separate thread
+            // TODO correctness: there could be a case where new input is sent
+            // between the moment the future is polled ready and the moment
+            // before the next poll is called, which is a missed message.
+            // We could solve this by spawning a dedicated thread for reading
+            // from stdin and sending to the channel. By doing that, we also
+            // have to stop the thread when the stream is dropped.
             let runtime = current();
             runtime.spawn_blocking(move || {
                 let stdin = stdin();
