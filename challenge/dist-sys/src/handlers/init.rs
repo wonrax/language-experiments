@@ -1,5 +1,3 @@
-use log::debug;
-
 use crate::{
     proto::{Request, Response},
     App, Context,
@@ -23,7 +21,6 @@ pub async fn handle(app: &mut App, r: &Request) -> Response {
         .collect();
 
     *context = Some(Context { node_id, node_ids });
-    debug!("initialized context: {:?}", context);
 
     Response::new("init_ok")
 }

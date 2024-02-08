@@ -7,13 +7,13 @@ use std::{
 use futures::Future;
 use log::debug;
 
-struct TimerThenReturnElapsedFuture {
+pub struct TimerThenReturnElapsedFuture {
     state: Arc<Mutex<(bool, Option<Waker>, Option<std::time::Duration>)>>,
     duration: std::time::Duration,
 }
 
 impl TimerThenReturnElapsedFuture {
-    fn new(duration: std::time::Duration) -> Self {
+    pub fn new(duration: std::time::Duration) -> Self {
         let state = Arc::new(Mutex::new((false, Option::<Waker>::None, None)));
 
         let state_clone = state.clone();
