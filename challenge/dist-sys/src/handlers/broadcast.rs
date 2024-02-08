@@ -3,7 +3,6 @@ use serde_json::json;
 
 use crate::{
     proto::{Request, Response},
-    timer::TimerThenReturnElapsedFuture,
     App,
 };
 
@@ -36,7 +35,6 @@ pub async fn handle(app: &mut App, r: &Request) -> Response {
                     loop {
                         let mut send = send.clone();
                         let r = r.clone();
-                        // TODO implement backoff
                         current().spawn(async move {
                             let res = crate::client::request(r).await;
                             if res.typ == "broadcast_ok" {
@@ -48,9 +46,8 @@ pub async fn handle(app: &mut App, r: &Request) -> Response {
                                 break;
                             }
                         }
-                        // TODO implement and use a proper timer
-                        TimerThenReturnElapsedFuture::new(std::time::Duration::from_millis(500))
-                            .await;
+                        // TODO implement backoff
+                        futures_timer::Delay::new(std::time::Duration::from_millis(100)).await;
                     }
                 });
             }
