@@ -3,7 +3,6 @@ mod handlers;
 mod proto;
 mod server;
 mod stdin;
-mod timer;
 
 use std::{
     collections::{HashMap, HashSet},

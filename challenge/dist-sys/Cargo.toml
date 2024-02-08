@@ -10,6 +10,7 @@ anyhow = "1.0.75"
 async-runtime = { workspace = true }
 crossbeam-channel = "0.5.10"
 futures = "0.3.29"
+futures-timer = "3.0.2"
 log = "0.4.20"
 pretty_env_logger = "0.5.0"
 serde = { version = "1.0.193", features = ["serde_derive"] }
