@@ -18,6 +18,7 @@ struct Inner {
     unique_id_sequence: RwLock<(u128, u32)>,
     broadcast_data: RwLock<HashSet<i64>>,
     topology: RwLock<HashMap<String, Vec<String>>>,
+    counter: RwLock<u64>,
 }
 
 type App = Arc<Inner>;
@@ -58,6 +59,7 @@ async fn main_handler(mut app: App, r: Request) -> Response {
         "echo" => handlers::echo::handle(&mut app, &r).await,
         "generate" => handlers::unique_id::handle(&mut app, &r).await,
         "broadcast" | "read" | "topology" => handlers::broadcast::handle(&mut app, &r).await,
+        "add" /* | "read" */ => handlers::add::handle(&mut app, &r).await,
         _ => panic!("unknown message type: request: {:?}", r),
     };
 
@@ -83,6 +85,7 @@ fn main() {
         unique_id_sequence: RwLock::new((0, 0)),
         broadcast_data: RwLock::new(HashSet::new()),
         topology: RwLock::new(HashMap::new()),
+        counter: RwLock::new(0),
     });
 
     let runtime = runtime::new_runtime(4, 36);
