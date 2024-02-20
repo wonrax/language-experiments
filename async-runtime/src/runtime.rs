@@ -143,10 +143,11 @@ impl Worker<'static> {
         // TODO since we're not using crossbeam channel's recv(), we don't get
         // the benefit of yielding the thread when the channel is empty.
         // Performance opportunities:
-        // - implement or use crossbeam's Backoff to yield the thread or spin
-        //   when the channel is empty
-        // - park the thread and use signal mechanism to wake up the thread when
+        // - [DONE] park the thread and use signal mechanism to wake up the thread when
         //   there's a new task
+        // - implement or use crossbeam's Backoff to yield the thread or spin
+        //   when the channel is empty, so that we don't have to park the thread
+        //   prematurely.
         loop {
             let mut task: Option<Arc<Task<'static>>> = None;
 
@@ -207,6 +208,9 @@ impl ArcWake for Task<'static> {
         let cloned = arc_self.to_owned();
         // TODO proper error handling
         arc_self.task_sender.send(cloned).unwrap();
+        // TODO maybe implement a mechanism to check if there are idle threads
+        // (i.e. num_idle_threads > 0) if not we don't need to notify. Also the
+        // notify could be cheaper than manually checking the condition.
         arc_self.condvar.1.notify_one();
     }
 }
