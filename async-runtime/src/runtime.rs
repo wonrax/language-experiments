@@ -9,7 +9,7 @@ use std::{
     any::Any,
     cell::RefCell,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 
 use crate::threadpool::{JoinHandle, ThreadPool};
@@ -22,16 +22,19 @@ thread_local! {
 pub struct Handle {
     task_sender: crossbeam_channel::Sender<Arc<Task<'static>>>,
     thread_pool: Arc<ThreadPool>,
+    condvar: Arc<(Mutex<()>, Condvar)>,
 }
 
 impl Handle {
     fn new(
         task_sender: crossbeam_channel::Sender<Arc<Task<'static>>>,
         thread_pool: Arc<ThreadPool>,
+        condvar: Arc<(Mutex<()>, Condvar)>,
     ) -> Self {
         Self {
             task_sender,
             thread_pool,
+            condvar,
         }
     }
 
@@ -52,9 +55,12 @@ impl Handle {
             future: Mutex::new(future),
             task_sender: self.task_sender.clone(),
             result_sender: Some(result_send),
+            condvar: self.condvar.clone(),
         });
 
         self.task_sender.send(task).unwrap();
+
+        self.condvar.1.notify_one();
 
         JoinHandle::new(result_recv)
     }
@@ -95,12 +101,14 @@ pub fn new_runtime(num_worker: usize, max_blocking_threads: usize) -> Handle {
 
     let (global_send, global_recv) = crossbeam_channel::unbounded::<Arc<Task>>();
 
-    let handle = Handle::new(global_send.clone(), thread_pool.clone());
+    let condvar = Arc::new((Mutex::new(()), Condvar::new()));
+
+    let handle = Handle::new(global_send.clone(), thread_pool.clone(), condvar.clone());
 
     set_current(handle.clone());
 
     for _ in 0..num_worker {
-        let executor = Worker::new(global_recv.clone());
+        let executor = Worker::new(global_recv.clone(), condvar.clone());
         thread_pool.spawn_blocking(move || executor.run());
     }
 
@@ -112,16 +120,22 @@ struct Worker<'a> {
     global_queue: crossbeam_channel::Receiver<Arc<Task<'a>>>,
     // the task sender for this local queue
     task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
+    condvar: Arc<(Mutex<()>, Condvar)>,
 }
 
 // TODO implement lifetime correctly
 impl Worker<'static> {
-    fn new(global_queue: crossbeam_channel::Receiver<Arc<Task<'static>>>) -> Self {
+    fn new(
+        global_queue: crossbeam_channel::Receiver<Arc<Task<'static>>>,
+        condvar: Arc<(Mutex<()>, Condvar)>,
+    ) -> Self {
         let (sender, queue) = crossbeam_channel::unbounded::<Arc<Task>>();
+
         Self {
             local_queue: queue,
             global_queue,
             task_sender: sender,
+            condvar,
         }
     }
 
@@ -145,6 +159,11 @@ impl Worker<'static> {
                 // queue sender, so that any futures that this task spawns
                 // get queued in the local queue.
                 task = Some(t);
+            } else {
+                drop(task);
+                let lock = self.condvar.0.lock().unwrap();
+                drop(self.condvar.1.wait(lock).unwrap());
+                continue;
             }
 
             if let Some(task) = task {
@@ -179,6 +198,7 @@ struct Task<'a> {
     future: Mutex<Pin<Box<dyn Future<Output = Box<TaskResult>> + Send>>>,
     task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
     result_sender: Option<crossbeam_channel::Sender<Box<TaskResult>>>,
+    condvar: Arc<(Mutex<()>, Condvar)>,
 }
 
 impl ArcWake for Task<'static> {
@@ -187,5 +207,6 @@ impl ArcWake for Task<'static> {
         let cloned = arc_self.to_owned();
         // TODO proper error handling
         arc_self.task_sender.send(cloned).unwrap();
+        arc_self.condvar.1.notify_one();
     }
 }
