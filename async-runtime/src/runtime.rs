@@ -176,7 +176,7 @@ impl Worker<'static> {
 type TaskResult = dyn Any + Send + 'static;
 
 struct Task<'a> {
-    future: Mutex<Pin<Box<dyn Future<Output = Box<TaskResult>> + Send + 'a>>>,
+    future: Mutex<Pin<Box<dyn Future<Output = Box<TaskResult>> + Send>>>,
     task_sender: crossbeam_channel::Sender<Arc<Task<'a>>>,
     result_sender: Option<crossbeam_channel::Sender<Box<TaskResult>>>,
 }
