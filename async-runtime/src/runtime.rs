@@ -10,6 +10,7 @@ use std::{
     cell::RefCell,
     pin::Pin,
     sync::{Arc, Condvar, Mutex},
+    time::Duration,
 };
 
 use crate::threadpool::{JoinHandle, ThreadPool};
@@ -163,7 +164,16 @@ impl Worker<'static> {
             } else {
                 drop(task);
                 let lock = self.condvar.0.lock().unwrap();
-                drop(self.condvar.1.wait(lock).unwrap());
+                drop(
+                    self.condvar
+                        .1
+                        // We want the thread to wake up every 100ms to check if
+                        // there are any tasks in the global queue. This is to
+                        // prevent the thread from sleeping indefinitely when
+                        // there are tasks in the global queue.
+                        .wait_timeout(lock, Duration::from_millis(100))
+                        .unwrap(),
+                );
                 continue;
             }
 
