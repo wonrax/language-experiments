@@ -58,8 +58,8 @@ async fn main_handler(mut app: App, r: Request) -> Response {
         "init" => handlers::init::handle(&mut app, &r).await,
         "echo" => handlers::echo::handle(&mut app, &r).await,
         "generate" => handlers::unique_id::handle(&mut app, &r).await,
-        "broadcast" | "read" | "topology" => handlers::broadcast::handle(&mut app, &r).await,
-        "add" /* | "read" */ => handlers::add::handle(&mut app, &r).await,
+        "broadcast" /* | "read" */ | "topology" => handlers::broadcast::handle(&mut app, &r).await,
+        "add" | "read" => handlers::add::handle(&mut app, &r).await,
         _ => panic!("unknown message type: request: {:?}", r),
     };
 
