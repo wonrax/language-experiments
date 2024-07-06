@@ -1,5 +1,5 @@
 [workspace]
-members = ["async-runtime", "architect/plugin-system", "challenge/dist-sys"]
+members = ["async-runtime", "architect/plugin-system", "challenge/dist-sys", "data-structures/wheel-timer"]
 
 [package]
 name = "rust-experiments"
