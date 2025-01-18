@@ -4,3 +4,7 @@
 /maelstrom
 # maelstrom temporary files
 /store
+
+# Haskell build artifacts
+dist-newstyle/
+
