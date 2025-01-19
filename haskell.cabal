@@ -96,9 +96,17 @@ test-suite cis1940-test
     hs-source-dirs:   challenge/cis1940/test
 
     -- The entrypoint to the test suite.
-    main-is:          Main.hs
+    main-is:          Spec.hs
+
+    other-modules:    Chap1Spec
 
     -- Test dependencies.
     build-depends:
         base ^>=4.18.2.1,
+        hspec ^>=2.11,
+        hspec-discover ^>=2.11,
         language-experiments:cis1940
+
+    build-tool-depends:
+        hspec-discover:hspec-discover ^>=2.11
+

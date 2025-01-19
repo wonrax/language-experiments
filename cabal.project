@@ -1,0 +1,4 @@
+packages: *.cabal
+ignore-project: False
+tests: True
+
