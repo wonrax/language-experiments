@@ -60,6 +60,8 @@ library cis1940
     -- Modules exported by the library.
     exposed-modules:  MyLib
                       Chap1
+                      Chap2.LogAnalysis
+                      Chap2.Log
 
     -- Modules included in this library but not exported.
     -- other-modules:
