@@ -1,5 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
-
 module Chap2.LogAnalysis where
 
 import Chap2.Log
@@ -39,16 +37,16 @@ inOrder Leaf = []
 inOrder (Node left dat right) = inOrder left ++ [dat] ++ inOrder right
 
 whatWentWrong :: [LogMessage] -> [String]
-whatWentWrong l =
-  map
-    ( \case
-        LogMessage _ _ message -> message
-        _ -> error "unreachable"
-    )
-    ( filter
-        ( \case
-            LogMessage (Error svr) _ _ -> svr >= 50
-            _ -> False
-        )
-        (inOrder (build l))
-    )
+whatWentWrong =
+  map extractMessage
+    . filter isSevereError
+    . inOrder
+    . build
+ where
+  isSevereError :: LogMessage -> Bool
+  isSevereError (LogMessage (Error svr) _ _) = svr >= 50
+  isSevereError _ = False
+
+  extractMessage :: LogMessage -> String
+  extractMessage (LogMessage _ _ message) = message
+  extractMessage _ = error "unreachable"
