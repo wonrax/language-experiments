@@ -1,3 +1,5 @@
+{-# LANGUAGE LambdaCase #-}
+
 module Chap2.LogAnalysis where
 
 import Chap2.Log
@@ -28,3 +30,25 @@ insert log1 (Node left targetLog right)
  where
   extractTimestamp (LogMessage _ ts _) = ts
   extractTimestamp (Unknown _) = error "Cannot extract timestamp from Unknown log message"
+
+build :: [LogMessage] -> MessageTree
+build = foldr insert Leaf
+
+inOrder :: MessageTree -> [LogMessage]
+inOrder Leaf = []
+inOrder (Node left dat right) = inOrder left ++ [dat] ++ inOrder right
+
+whatWentWrong :: [LogMessage] -> [String]
+whatWentWrong l =
+  map
+    ( \case
+        LogMessage _ _ message -> message
+        _ -> error "unreachable"
+    )
+    ( filter
+        ( \case
+            LogMessage (Error svr) _ _ -> svr >= 50
+            _ -> False
+        )
+        (inOrder (build l))
+    )
