@@ -101,6 +101,7 @@ test-suite cis1940-test
     main-is:          Spec.hs
 
     other-modules:    Chap1Spec
+                      Chap2Spec
 
     -- Test dependencies.
     build-depends:

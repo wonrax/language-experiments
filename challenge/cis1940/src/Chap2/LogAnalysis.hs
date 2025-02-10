@@ -18,3 +18,13 @@ parseMessage m = case words m of
 
 parse :: String -> [LogMessage]
 parse = map parseMessage . lines
+
+insert :: LogMessage -> MessageTree -> MessageTree
+insert (Unknown _) tree = tree
+insert log1 Leaf = Node Leaf log1 Leaf
+insert log1 (Node left targetLog right)
+  | extractTimestamp targetLog < extractTimestamp log1 = Node left targetLog (insert log1 right)
+  | otherwise = Node (insert log1 left) targetLog right
+ where
+  extractTimestamp (LogMessage _ ts _) = ts
+  extractTimestamp (Unknown _) = error "Cannot extract timestamp from Unknown log message"
